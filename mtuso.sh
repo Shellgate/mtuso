@@ -1,19 +1,17 @@
 #!/bin/bash
 
-# ========== [ Colors ] ==========
+# ==== Colors ====
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[1;36m'
 NC='\033[0m'
 
-SELF_URL="https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso.sh"
 INSTALL_PATH="/usr/local/bin/mtuso"
 SYSTEMD_SERVICE="/etc/systemd/system/mtuso.service"
 STATUS_FILE="/tmp/.smart_mtu_mss_status"
 CONFIG_FILE="/etc/mtuso.conf"
 
-# ========== [ Dependency Installer ] ==========
 install_deps() {
     echo -e "${CYAN}Checking dependencies...${NC}"
     local pkgs=(iproute2 net-tools bc curl)
@@ -35,16 +33,13 @@ install_deps() {
     fi
 }
 
-# ========== [ Service Setup/Cleaner ] ==========
 setup_service() {
     echo -e "${CYAN}Configuring systemd service...${NC}"
-    # Stop and disable previous service
     sudo systemctl stop mtuso 2>/dev/null
     sudo systemctl disable mtuso 2>/dev/null
     sudo rm -f "$SYSTEMD_SERVICE"
     sudo systemctl daemon-reload
 
-    # Create new service file
     sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
 [Unit]
 Description=MTU Smart Optimizer Service
@@ -64,7 +59,6 @@ EOF
     echo -e "${GREEN}Service file created and enabled in systemd.${NC}"
 }
 
-# ========== [ Helpers ] ==========
 get_main_interface() {
     ip route | grep '^default' | awk '{print $5}' | head -n1
 }
@@ -124,7 +118,6 @@ show_service_error() {
     echo -e "${YELLOW}Summary: Missing/corrupted executable, wrong permissions, or invalid config are likely causes.${NC}"
 }
 
-# ========== [ Main Configuration ] ==========
 configure_settings() {
     install_deps
 
@@ -146,7 +139,6 @@ configure_settings() {
         prev_FORCE_JUMBO="$FORCE_JUMBO"
     fi
 
-    # Input DST
     while true; do
         read -p "Enter destination IP or domain for MTU test [${prev_DST}]: " DST_NEW
         DST="${DST_NEW:-$prev_DST}"
@@ -156,8 +148,6 @@ configure_settings() {
             echo -e "${RED}Invalid IP address or hostname. Please try again.${NC}"
         fi
     done
-
-    # Input INTERVAL
     while true; do
         read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s) [${prev_INTERVAL}]: " INTERVAL_RAW_NEW
         INTERVAL_RAW="${INTERVAL_RAW_NEW:-$prev_INTERVAL}"
@@ -165,8 +155,6 @@ configure_settings() {
         [ "$INTERVAL" -ge 5 ] && break
         echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
     done
-
-    # Input JUMBO
     if test_jumbo_supported "$IFACE"; then
         while true; do
             read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n) [${prev_JUMBO}]: " JUMBO_NEW
@@ -188,7 +176,6 @@ configure_settings() {
         FORCE_JUMBO="n"
     fi
 
-    # Save config
     sudo tee "$CONFIG_FILE" >/dev/null <<EOF
 DST=$DST
 INTERVAL=$INTERVAL
@@ -197,7 +184,6 @@ FORCE_JUMBO=$FORCE_JUMBO
 EOF
     echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
 
-    # Check and fix executable
     if [ ! -f "$INSTALL_PATH" ]; then
         echo -e "${RED}Executable not found: $INSTALL_PATH. Cannot (re)start service.${NC}"
         return 1
@@ -208,13 +194,11 @@ EOF
     fi
     sudo chmod +x "$INSTALL_PATH"
 
-    # Setup & restart service
     setup_service
     sudo systemctl daemon-reload
     sudo systemctl restart mtuso
 
     sleep 1
-
     if ! systemctl is-active --quiet mtuso 2>/dev/null; then
         show_service_error
     else
@@ -223,7 +207,6 @@ EOF
     sleep 1
 }
 
-# ========== [ Apply MTU/MSS ] ==========
 apply_settings() {
     local IFACE=$1
     local MTU=$2
@@ -241,7 +224,6 @@ apply_settings() {
     return 0
 }
 
-# ========== [ Reset/Uninstall/Other UI ] ==========
 reset_settings() {
     local IFACE
     IFACE=$(get_main_interface)
@@ -332,7 +314,6 @@ delete_settings() {
     sleep 1
 }
 
-# ========== [ MTU Test Core ] ==========
 find_best_mtu() {
     local IFACE=$1
     local DST=$2
@@ -408,7 +389,6 @@ run_optimization() {
     done
 }
 
-# ========== [ Service Entrypoint ] ==========
 if [ "$1" = "--auto" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found at $CONFIG_FILE, waiting for configuration..."
@@ -418,7 +398,6 @@ if [ "$1" = "--auto" ]; then
     exit 0
 fi
 
-# ========== [ Main Menu ] ==========
 while true; do
     clear
     echo -e "${CYAN}========= MTUSO - Smart MTU/MSS Optimizer =========${NC}"
