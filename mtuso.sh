@@ -88,17 +88,50 @@ validate_ip_or_host() {
     return 0
 }
 
+parse_duration() {
+    local input="$1"
+    local total=0
+    local rest="$input"
+    local matched=0
+    while [[ -n "$rest" ]]; do
+        if [[ $rest =~ ^([0-9]+)[hH](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]} * 3600))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)[mM](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]} * 60))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)[sS](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)(.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        else
+            break
+        fi
+        rest="${rest#"${rest%%[![:space:]]*}"}"
+    done
+    [[ $matched -eq 1 ]] && echo $total || echo 0
+}
+
 test_mtu() {
     local IFACE=$1
     local DST=$2
     local MIN_MTU=1300
     local MAX_MTU=1500
     local BEST_MTU=$MIN_MTU
+    local original_mtu
 
-    sudo ip link set dev "$IFACE" up
+    original_mtu=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
+    sudo ip link set dev "$IFACE" mtu $MAX_MTU
 
     if ! ping -I "$IFACE" -c 1 -W 1 "$DST" >/dev/null 2>&1; then
         echo -e "${YELLOW}Warning: $IFACE cannot reach $DST. Skipping.${NC}"
+        sudo ip link set dev "$IFACE" mtu $original_mtu
         return 1
     fi
 
@@ -108,6 +141,7 @@ test_mtu() {
             break
         fi
     done
+    sudo ip link set dev "$IFACE" mtu $original_mtu
     echo $BEST_MTU
     return 0
 }
@@ -137,14 +171,13 @@ apply_settings() {
     local ORIG_MTU
     ORIG_MTU=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
     sudo ip link set dev $IFACE mtu $MTU
-    # Test connectivity after MTU change
     if ! ping -I "$IFACE" -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then
         sudo ip link set dev $IFACE mtu $ORIG_MTU
         echo -e "${RED}MTU change broke connectivity. Reverted to previous MTU ($ORIG_MTU).${NC}"
         return 1
     fi
-    sudo iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
-    sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    sudo iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS 2>/dev/null || \
+    sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS
     return 0
 }
 
@@ -200,7 +233,7 @@ show_status() {
 }
 
 configure_settings() {
-    local IFACE DST INTERVAL JUMBO
+    local IFACE DST INTERVAL_RAW INTERVAL JUMBO
     IFACE=$(get_main_interface)
     if [ -z "$IFACE" ]; then
         echo -e "${RED}No main network interface detected.${NC}"
@@ -209,16 +242,17 @@ configure_settings() {
     echo -e "${CYAN}Detected main interface: $IFACE${NC}"
 
     while true; do
-        read -p "Enter destination IP or domain to test against (e.g. 8.8.8.8): " DST
+        read -p "Enter destination IP or domain for MTU test (e.g. 8.8.8.8): " DST
         if validate_ip_or_host "$DST"; then
             break
         fi
     done
 
     while true; do
-        read -p "Enter optimization interval (in seconds, e.g. 10): " INTERVAL
-        [[ "$INTERVAL" =~ ^[0-9]+$ ]] && [ "$INTERVAL" -ge 5 ] && break
-        echo -e "${RED}Please enter a valid number (>=5)!${NC}"
+        read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s): " INTERVAL_RAW
+        INTERVAL=$(parse_duration "$INTERVAL_RAW")
+        [ "$INTERVAL" -ge 5 ] && break
+        echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
     done
 
     if test_jumbo_supported "$IFACE"; then
@@ -228,7 +262,6 @@ configure_settings() {
         JUMBO="n"
     fi
 
-    # Write config
     sudo tee "$CONFIG_FILE" >/dev/null <<EOF
 DST=$DST
 INTERVAL=$INTERVAL
@@ -251,13 +284,17 @@ run_optimization() {
 
     while [ "$(cat $STATUS_FILE 2>/dev/null)" == "enabled" ]; do
         if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-            MTU=9000
-            if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                MSS=$(calc_mss $MTU)
-                echo -e "${CYAN}Applying MTU=$MTU and MSS=$MSS on $IFACE${NC}"
-                apply_settings $IFACE $MTU $MSS
+            if test_jumbo_supported "$IFACE"; then
+                MTU=9000
+                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                    MSS=$(calc_mss $MTU)
+                    echo -e "${CYAN}Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+                    apply_settings $IFACE $MTU $MSS
+                else
+                    echo -e "${RED}Jumbo Frame not working to $DST. Skipping.${NC}"
+                fi
             else
-                echo -e "${RED}Jumbo Frame not working to $DST. Skipping.${NC}"
+                echo -e "${RED}Jumbo Frame not supported by $IFACE, skipping.${NC}"
             fi
         else
             MTU=$(test_mtu $IFACE $DST)
@@ -302,9 +339,7 @@ delete_settings() {
     sleep 1
 }
 
-# --- CLI Arguments for Service Start ---
 if [ "$1" = "--auto" ]; then
-    # Only run with a config file!
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found at $CONFIG_FILE, waiting for configuration..."
         while [ ! -f "$CONFIG_FILE" ]; do sleep 10; done
@@ -315,10 +350,12 @@ if [ "$1" = "--auto" ]; then
         echo "enabled" > $STATUS_FILE
 
         if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-            MTU=9000
-            if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                MSS=$(calc_mss $MTU)
-                apply_settings $IFACE $MTU $MSS
+            if test_jumbo_supported "$IFACE"; then
+                MTU=9000
+                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                    MSS=$(calc_mss $MTU)
+                    apply_settings $IFACE $MTU $MSS
+                fi
             fi
         else
             MTU=$(test_mtu $IFACE $DST)
@@ -336,7 +373,6 @@ if [ "$1" = "--auto" ]; then
     exit 0
 fi
 
-# --- Dynamic Main Menu Loop ---
 while true; do
     clear
     echo -e "${CYAN}"
