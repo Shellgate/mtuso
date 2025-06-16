@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # MTU/MSS Smart Optimizer - Main Script
-# Author: Shellgate Copilot
+# Author: Shellgate
 
 RED='\033[1;31m'
 GREEN='\033[1;32m'
