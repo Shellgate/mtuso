@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # MTUSO Installer & Launcher (Modern Status Display)
-# Author: Shellgate Copilot
+# Author: Shellgate
 
 set -e
 
