@@ -14,25 +14,24 @@ STATUS_FILE="/tmp/.smart_mtu_mss_status"
 CONFIG_FILE="/etc/mtuso.conf"
 
 install_deps() {
-    echo -e "${CYAN}Installing dependencies...${NC}"
-    sudo apt-get update -y
-    sudo apt-get install -y iproute2 net-tools bc curl
-    echo -e "${GREEN}Dependencies installed.${NC}"
-}
-
-self_install() {
-    echo -e "${CYAN}Installing MTUSO...${NC}"
-    sudo curl -fsSL "$SELF_URL" -o "$INSTALL_PATH"
-    sudo chmod +x "$INSTALL_PATH"
-    setup_service
-    sudo systemctl daemon-reload
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        sudo systemctl restart mtuso
+    echo -e "${CYAN}Checking and installing dependencies...${NC}"
+    local pkgs=(iproute2 net-tools bc curl)
+    local to_install=()
+    for pkg in "${pkgs[@]}"; do
+        dpkg -s "$pkg" >/dev/null 2>&1 || to_install+=("$pkg")
+    done
+    if (( ${#to_install[@]} )); then
+        if ping -c1 -W1 1.1.1.1 >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y "${to_install[@]}"
+            echo -e "${GREEN}Dependencies installed.${NC}"
+        else
+            echo -e "${RED}No internet connection. Cannot install: ${to_install[*]}.${NC}"
+            echo -e "${YELLOW}If these packages are missing, please install manually!${NC}"
+        fi
     else
-        sudo systemctl start mtuso
+        echo -e "${GREEN}All dependencies already installed.${NC}"
     fi
-    echo -e "${GREEN}MTUSO installed to $INSTALL_PATH and service started.${NC}"
-    sleep 1
 }
 
 setup_service() {
@@ -57,8 +56,7 @@ get_main_interface() {
 }
 
 validate_ip_or_host() {
-    local DST="$1"
-    ping -c1 -W1 "$DST" >/dev/null 2>&1
+    ping -c1 -W1 "$1" >/dev/null 2>&1
 }
 
 parse_duration() {
@@ -102,6 +100,113 @@ test_jumbo_supported() {
     else
         return 1
     fi
+}
+
+show_service_error() {
+    echo -e "${RED}Service failed to start or restart.${NC}"
+    systemctl status mtuso --no-pager -l | head -20
+    echo -e "${YELLOW}Recent logs:${NC}"
+    sudo journalctl -u mtuso -n 10 --no-pager
+    echo -e "${YELLOW}Summary: Most likely cause is missing/corrupted executable, wrong permissions, or invalid config.${NC}"
+}
+
+configure_settings() {
+    install_deps
+
+    local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
+    IFACE=$(get_main_interface)
+    if [ -z "$IFACE" ]; then
+        echo -e "${RED}No main network interface detected.${NC}"
+        return
+    fi
+    echo -e "${CYAN}Detected main interface: $IFACE${NC}"
+
+    # Load previous config if exists
+    local prev_DST="" prev_INTERVAL="" prev_JUMBO="" prev_FORCE_JUMBO=""
+    if [ -f "$CONFIG_FILE" ]; then
+        . "$CONFIG_FILE"
+        prev_DST="$DST"
+        prev_INTERVAL="$INTERVAL"
+        prev_JUMBO="$JUMBO"
+        prev_FORCE_JUMBO="$FORCE_JUMBO"
+    fi
+
+    # Input DST
+    while true; do
+        read -p "Enter destination IP or domain for MTU test [${prev_DST}]: " DST_NEW
+        DST="${DST_NEW:-$prev_DST}"
+        if [ -n "$DST" ] && validate_ip_or_host "$DST"; then
+            break
+        else
+            echo -e "${RED}Invalid IP address or hostname. Please try again.${NC}"
+        fi
+    done
+
+    # Input INTERVAL
+    while true; do
+        read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s) [${prev_INTERVAL}]: " INTERVAL_RAW_NEW
+        INTERVAL_RAW="${INTERVAL_RAW_NEW:-$prev_INTERVAL}"
+        INTERVAL=$(parse_duration "$INTERVAL_RAW")
+        [ "$INTERVAL" -ge 5 ] && break
+        echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
+    done
+
+    # Input JUMBO
+    if test_jumbo_supported "$IFACE"; then
+        while true; do
+            read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n) [${prev_JUMBO}]: " JUMBO_NEW
+            JUMBO="${JUMBO_NEW:-$prev_JUMBO}"
+            if [[ "$JUMBO" =~ ^[yYnN]$ ]]; then break; fi
+        done
+        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
+            while true; do
+                read -p "Force Jumbo Frame even if ping test fails? (y/n) [${prev_FORCE_JUMBO}]: " FORCE_JUMBO_NEW
+                FORCE_JUMBO="${FORCE_JUMBO_NEW:-$prev_FORCE_JUMBO}"
+                if [[ "$FORCE_JUMBO" =~ ^[yYnN]$ ]]; then break; fi
+            done
+        else
+            FORCE_JUMBO="n"
+        fi
+    else
+        echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
+        JUMBO="n"
+        FORCE_JUMBO="n"
+    fi
+
+    # Save config
+    sudo tee "$CONFIG_FILE" >/dev/null <<EOF
+DST=$DST
+INTERVAL=$INTERVAL
+JUMBO=$JUMBO
+FORCE_JUMBO=$FORCE_JUMBO
+EOF
+    echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
+
+    # Check and fix executable
+    if [ ! -f "$INSTALL_PATH" ]; then
+        echo -e "${RED}Executable not found: $INSTALL_PATH. Cannot (re)start service.${NC}"
+        return 1
+    fi
+    if ! head -1 "$INSTALL_PATH" | grep -qE '^#!.*/bash'; then
+        echo -e "${RED}Script missing or invalid shebang (#!/bin/bash)${NC}"
+        return 1
+    fi
+    sudo chmod +x "$INSTALL_PATH"
+
+    # Setup & restart service
+    setup_service
+    sudo systemctl daemon-reload
+    sudo systemctl restart mtuso
+
+    sleep 1
+
+    # Check status and print error if failed
+    if ! systemctl is-active --quiet mtuso 2>/dev/null; then
+        show_service_error
+    else
+        echo -e "${GREEN}Service restarted and running with new configuration.${NC}"
+    fi
+    sleep 1
 }
 
 apply_settings() {
@@ -166,6 +271,12 @@ toggle_autostart() {
 }
 
 restart_service() {
+    if [ ! -f "$INSTALL_PATH" ]; then
+        echo -e "${RED}Executable not found: $INSTALL_PATH. Cannot restart service.${NC}"
+        return 1
+    fi
+    sudo chmod +x "$INSTALL_PATH"
+    sudo systemctl daemon-reload
     if systemctl is-active --quiet mtuso 2>/dev/null; then
         sudo systemctl restart mtuso
         echo -e "${GREEN}Service restarted.${NC}"
@@ -233,64 +344,6 @@ find_best_mtu() {
         fi
     done
     echo $best_mtu
-}
-
-configure_settings() {
-    local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
-    IFACE=$(get_main_interface)
-    if [ -z "$IFACE" ]; then
-        echo -e "${RED}No main network interface detected.${NC}"
-        return
-    fi
-    echo -e "${CYAN}Detected main interface: $IFACE${NC}"
-
-    while true; do
-        read -p "Enter destination IP or domain for MTU test (e.g. 8.8.8.8): " DST
-        if validate_ip_or_host "$DST"; then
-            break
-        else
-            echo -e "${RED}Invalid IP address or hostname. Please try again.${NC}"
-        fi
-    done
-
-    while true; do
-        read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s): " INTERVAL_RAW
-        INTERVAL=$(parse_duration "$INTERVAL_RAW")
-        [ "$INTERVAL" -ge 5 ] && break
-        echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
-    done
-
-    if test_jumbo_supported "$IFACE"; then
-        read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n): " JUMBO
-        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
-            read -p "Force Jumbo Frame even if ping test fails? (y/n): " FORCE_JUMBO
-        else
-            FORCE_JUMBO="n"
-        fi
-    else
-        echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
-        JUMBO="n"
-        FORCE_JUMBO="n"
-    fi
-
-    sudo tee "$CONFIG_FILE" >/dev/null <<EOF
-DST=$DST
-INTERVAL=$INTERVAL
-JUMBO=$JUMBO
-FORCE_JUMBO=$FORCE_JUMBO
-EOF
-    echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
-
-    setup_service
-    sudo systemctl daemon-reload
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        sudo systemctl restart mtuso
-        echo -e "${GREEN}Service restarted with new configuration.${NC}"
-    else
-        sudo systemctl start mtuso
-        echo -e "${GREEN}Service started with new configuration.${NC}"
-    fi
-    sleep 1
 }
 
 run_optimization() {
