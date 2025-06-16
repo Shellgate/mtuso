@@ -25,7 +25,11 @@ self_install() {
     echo -e "${CYAN}Installing MTUSO...${NC}"
     sudo curl -fsSL "$SELF_URL" -o "$INSTALL_PATH"
     sudo chmod +x "$INSTALL_PATH"
-    echo -e "${GREEN}MTUSO installed to $INSTALL_PATH${NC}"
+
+    setup_service
+    sudo systemctl daemon-reload
+    sudo systemctl restart mtuso
+    echo -e "${GREEN}MTUSO installed to $INSTALL_PATH and service restarted.${NC}"
     sleep 1
 }
 
@@ -181,13 +185,20 @@ restart_service() {
 uninstall_all() {
     read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Uninstall cancelled.${NC}"; return; }
+
+    IFACE=$(get_main_interface)
+    if [ -n "$IFACE" ]; then
+        sudo ip link set dev $IFACE mtu 1500
+        sudo iptables -t mangle -F
+    fi
+
     sudo systemctl stop mtuso || true
     sudo systemctl disable mtuso || true
     sudo rm -f "$SYSTEMD_SERVICE"
     sudo rm -f "$INSTALL_PATH"
     sudo rm -f "$CONFIG_FILE"
     sudo systemctl daemon-reload
-    echo -e "${GREEN}MTUSO has been uninstalled.${NC}"
+    echo -e "${GREEN}MTUSO has been uninstalled and network settings restored to default.${NC}"
     sleep 1
     exit 0
 }
