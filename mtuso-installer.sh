@@ -5,7 +5,7 @@
 
 set -e
 
-SCRIPT_URL="https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/mtuso.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso.sh"
 SCRIPT_PATH="/usr/local/bin/mtuso"
 SYSTEMD_SERVICE="/etc/systemd/system/mtuso.service"
 STATUS_FILE="/tmp/.smart_mtu_mss_status"
