@@ -12,7 +12,7 @@ It continuously finds the best values for your network by testing and tuning in 
 Copy and paste this command in your terminal **(Debian/Ubuntu & derivatives):**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso-installer.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso.sh)
 ```
 
 ---
