@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# =========[ Colors ]=========
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -35,6 +34,17 @@ install_deps() {
 }
 
 setup_service() {
+    # Remove previous service if exists
+    if systemctl list-unit-files | grep -q '^mtuso\.service'; then
+        sudo systemctl stop mtuso 2>/dev/null
+        sudo systemctl disable mtuso 2>/dev/null
+    fi
+    if [ -f "$SYSTEMD_SERVICE" ]; then
+        sudo rm -f "$SYSTEMD_SERVICE"
+    fi
+    sudo systemctl daemon-reload
+
+    # Create new service
     cat <<EOF | sudo tee "$SYSTEMD_SERVICE" >/dev/null
 [Unit]
 Description=MTU Smart Optimizer Service
@@ -49,6 +59,7 @@ Restart=always
 WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
+    sudo systemctl enable mtuso
 }
 
 get_main_interface() {
