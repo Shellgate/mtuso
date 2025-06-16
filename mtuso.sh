@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# ========== [ Colors ] ==========
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -12,8 +13,9 @@ SYSTEMD_SERVICE="/etc/systemd/system/mtuso.service"
 STATUS_FILE="/tmp/.smart_mtu_mss_status"
 CONFIG_FILE="/etc/mtuso.conf"
 
+# ========== [ Dependency Installer ] ==========
 install_deps() {
-    echo -e "${CYAN}Checking and installing dependencies...${NC}"
+    echo -e "${CYAN}Checking dependencies...${NC}"
     local pkgs=(iproute2 net-tools bc curl)
     local to_install=()
     for pkg in "${pkgs[@]}"; do
@@ -25,27 +27,25 @@ install_deps() {
             sudo apt-get install -y "${to_install[@]}"
             echo -e "${GREEN}Dependencies installed.${NC}"
         else
-            echo -e "${RED}No internet connection. Cannot install: ${to_install[*]}.${NC}"
-            echo -e "${YELLOW}If these packages are missing, please install manually!${NC}"
+            echo -e "${RED}No internet connection. Cannot install: ${to_install[*]}${NC}"
+            echo -e "${YELLOW}Please install the required packages manually!${NC}"
         fi
     else
         echo -e "${GREEN}All dependencies already installed.${NC}"
     fi
 }
 
+# ========== [ Service Setup/Cleaner ] ==========
 setup_service() {
-    # Remove previous service if exists
-    if systemctl list-unit-files | grep -q '^mtuso\.service'; then
-        sudo systemctl stop mtuso 2>/dev/null
-        sudo systemctl disable mtuso 2>/dev/null
-    fi
-    if [ -f "$SYSTEMD_SERVICE" ]; then
-        sudo rm -f "$SYSTEMD_SERVICE"
-    fi
+    echo -e "${CYAN}Configuring systemd service...${NC}"
+    # Stop and disable previous service
+    sudo systemctl stop mtuso 2>/dev/null
+    sudo systemctl disable mtuso 2>/dev/null
+    sudo rm -f "$SYSTEMD_SERVICE"
     sudo systemctl daemon-reload
 
-    # Create new service
-    cat <<EOF | sudo tee "$SYSTEMD_SERVICE" >/dev/null
+    # Create new service file
+    sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
 [Unit]
 Description=MTU Smart Optimizer Service
 After=network-online.target
@@ -58,10 +58,13 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
+
     sudo systemctl daemon-reload
     sudo systemctl enable mtuso
+    echo -e "${GREEN}Service file created and enabled in systemd.${NC}"
 }
 
+# ========== [ Helpers ] ==========
 get_main_interface() {
     ip route | grep '^default' | awk '{print $5}' | head -n1
 }
@@ -115,12 +118,13 @@ test_jumbo_supported() {
 
 show_service_error() {
     echo -e "${RED}Service failed to start or restart.${NC}"
-    systemctl status mtuso --no-pager -l | head -20
+    systemctl status mtuso --no-pager -l | head -30
     echo -e "${YELLOW}Recent logs:${NC}"
     sudo journalctl -u mtuso -n 10 --no-pager
-    echo -e "${YELLOW}Summary: Most likely cause is missing/corrupted executable, wrong permissions, or invalid config.${NC}"
+    echo -e "${YELLOW}Summary: Missing/corrupted executable, wrong permissions, or invalid config are likely causes.${NC}"
 }
 
+# ========== [ Main Configuration ] ==========
 configure_settings() {
     install_deps
 
@@ -211,7 +215,6 @@ EOF
 
     sleep 1
 
-    # Check status and print error if failed
     if ! systemctl is-active --quiet mtuso 2>/dev/null; then
         show_service_error
     else
@@ -220,6 +223,7 @@ EOF
     sleep 1
 }
 
+# ========== [ Apply MTU/MSS ] ==========
 apply_settings() {
     local IFACE=$1
     local MTU=$2
@@ -237,6 +241,7 @@ apply_settings() {
     return 0
 }
 
+# ========== [ Reset/Uninstall/Other UI ] ==========
 reset_settings() {
     local IFACE
     IFACE=$(get_main_interface)
@@ -249,7 +254,7 @@ reset_settings() {
 
 show_status() {
     echo -e "${CYAN}Service status:${NC}"
-    systemctl status mtuso --no-pager -l | head -20
+    systemctl status mtuso --no-pager -l | head -30
     echo -e "${CYAN}Recent logs:${NC}"
     sudo journalctl -u mtuso -n 10 --no-pager
 }
@@ -327,6 +332,7 @@ delete_settings() {
     sleep 1
 }
 
+# ========== [ MTU Test Core ] ==========
 find_best_mtu() {
     local IFACE=$1
     local DST=$2
@@ -402,6 +408,7 @@ run_optimization() {
     done
 }
 
+# ========== [ Service Entrypoint ] ==========
 if [ "$1" = "--auto" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found at $CONFIG_FILE, waiting for configuration..."
@@ -411,6 +418,7 @@ if [ "$1" = "--auto" ]; then
     exit 0
 fi
 
+# ========== [ Main Menu ] ==========
 while true; do
     clear
     echo -e "${CYAN}========= MTUSO - Smart MTU/MSS Optimizer =========${NC}"
