@@ -46,35 +46,6 @@ EOF
     sudo systemctl daemon-reload
 }
 
-enable_service() {
-    setup_service
-    sudo systemctl enable mtuso
-    sudo systemctl start mtuso
-    echo -e "${GREEN}Service enabled and started.${NC}"
-    sleep 1
-}
-
-disable_service() {
-    sudo systemctl stop mtuso || true
-    sudo systemctl disable mtuso || true
-    echo -e "${RED}Service stopped and disabled.${NC}"
-    sleep 1
-}
-
-uninstall_all() {
-    read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Uninstall cancelled.${NC}"; return; }
-    sudo systemctl stop mtuso || true
-    sudo systemctl disable mtuso || true
-    sudo rm -f "$SYSTEMD_SERVICE"
-    sudo rm -f "$INSTALL_PATH"
-    sudo rm -f "$CONFIG_FILE"
-    sudo systemctl daemon-reload
-    echo -e "${GREEN}MTUSO has been uninstalled.${NC}"
-    sleep 1
-    exit 0
-}
-
 get_main_interface() {
     ip route | grep '^default' | awk '{print $5}' | head -n1
 }
@@ -116,34 +87,6 @@ parse_duration() {
         rest="${rest#"${rest%%[![:space:]]*}"}"
     done
     [[ $matched -eq 1 ]] && echo $total || echo 0
-}
-
-test_mtu() {
-    local IFACE=$1
-    local DST=$2
-    local MIN_MTU=1300
-    local MAX_MTU=1500
-    local BEST_MTU=$MIN_MTU
-    local original_mtu
-
-    original_mtu=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
-    sudo ip link set dev "$IFACE" mtu $MAX_MTU
-
-    if ! ping -I "$IFACE" -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-        echo -e "${YELLOW}Warning: $IFACE cannot reach $DST. Skipping.${NC}"
-        sudo ip link set dev "$IFACE" mtu $original_mtu
-        return 1
-    fi
-
-    for ((MTU=$MAX_MTU; MTU>=$MIN_MTU; MTU-=10)); do
-        if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-            BEST_MTU=$MTU
-            break
-        fi
-    done
-    sudo ip link set dev "$IFACE" mtu $original_mtu
-    echo $BEST_MTU
-    return 0
 }
 
 test_jumbo_supported() {
@@ -192,48 +135,74 @@ reset_settings() {
     sleep 1
 }
 
-get_service_status() {
-    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
-    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
-    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+show_status() {
+    echo -n "Service status: "
+    if systemctl is-active --quiet mtuso; then
+        echo -e "${GREEN}ON${NC}"
+    else
+        echo -e "${RED}OFF${NC}"
+    fi
+    echo -n "Service autostart: "
+    if systemctl is-enabled --quiet mtuso; then
         echo -e "${GREEN}ON${NC}"
     else
         echo -e "${RED}OFF${NC}"
     fi
 }
 
-get_optimization_status() {
-    if [ -f "$STATUS_FILE" ]; then
-        STATUS=$(cat "$STATUS_FILE")
-        case $STATUS in
-            enabled) echo -e "${GREEN}Running${NC}" ;;
-            paused) echo -e "${YELLOW}Paused${NC}" ;;
-            disabled) echo -e "${RED}Disabled${NC}" ;;
-            *) echo -e "${GRAY}Unknown${NC}" ;;
-        esac
+toggle_service() {
+    if systemctl is-active --quiet mtuso; then
+        sudo systemctl stop mtuso
+        echo -e "${YELLOW}Service stopped.${NC}"
     else
-        echo -e "${RED}Inactive${NC}"
+        sudo systemctl start mtuso
+        echo -e "${GREEN}Service started.${NC}"
     fi
+    sleep 1
 }
 
-show_status() {
-    if [ ! -f "$INSTALL_PATH" ]; then
-        echo -e "Status: ${RED}NOT INSTALLED${NC}"
-        return
-    fi
-    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
-    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
-    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
-        echo -e "Status: ${GREEN}ENABLED${NC}"
-    elif [ "$SYS_STATUS" = "enabled" ]; then
-        echo -e "Status: ${YELLOW}INSTALLED, but NOT RUNNING${NC}"
+toggle_autostart() {
+    if systemctl is-enabled --quiet mtuso; then
+        sudo systemctl disable mtuso
+        echo -e "${YELLOW}Service autostart disabled.${NC}"
     else
-        echo -e "Status: ${YELLOW}INSTALLED, but DISABLED${NC}"
+        sudo systemctl enable mtuso
+        echo -e "${GREEN}Service autostart enabled.${NC}"
     fi
+    sleep 1
+}
+
+restart_service() {
+    sudo systemctl restart mtuso
+    echo -e "${GREEN}Service restarted.${NC}"
+    sleep 1
+}
+
+uninstall_all() {
+    read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Uninstall cancelled.${NC}"; return; }
+    sudo systemctl stop mtuso || true
+    sudo systemctl disable mtuso || true
+    sudo rm -f "$SYSTEMD_SERVICE"
+    sudo rm -f "$INSTALL_PATH"
+    sudo rm -f "$CONFIG_FILE"
+    sudo systemctl daemon-reload
+    echo -e "${GREEN}MTUSO has been uninstalled.${NC}"
+    sleep 1
+    exit 0
+}
+
+delete_settings() {
+    read -p "Are you sure you want to reset all network optimization settings? (y/n): " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Reset cancelled.${NC}"; return; }
+    reset_settings
+    rm -f $STATUS_FILE
+    echo -e "${RED}All optimizer settings and status removed.${NC}"
+    sleep 1
 }
 
 configure_settings() {
-    local IFACE DST INTERVAL_RAW INTERVAL JUMBO
+    local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
     IFACE=$(get_main_interface)
     if [ -z "$IFACE" ]; then
         echo -e "${RED}No main network interface detected.${NC}"
@@ -257,17 +226,55 @@ configure_settings() {
 
     if test_jumbo_supported "$IFACE"; then
         read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n): " JUMBO
+        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
+            read -p "Force Jumbo Frame even if ping test fails? (y/n): " FORCE_JUMBO
+        else
+            FORCE_JUMBO="n"
+        fi
     else
         echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
         JUMBO="n"
+        FORCE_JUMBO="n"
     fi
 
     sudo tee "$CONFIG_FILE" >/dev/null <<EOF
 DST=$DST
 INTERVAL=$INTERVAL
 JUMBO=$JUMBO
+FORCE_JUMBO=$FORCE_JUMBO
 EOF
     echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
+    restart_service
+}
+
+find_best_mtu() {
+    local IFACE=$1
+    local DST=$2
+    local best_mtu=1300
+    local best_score=100000
+    local step=5
+    for ((mtu=1500; mtu>=1300; mtu-=step)); do
+        local ok=1
+        local delays=()
+        for i in {1..3}; do
+            OUT=$(ping -I "$IFACE" -M do -s $((mtu-28)) -c 1 -W 1 "$DST" 2>/dev/null)
+            if [[ $? -ne 0 ]]; then ok=0; break; fi
+            DELAY=$(echo "$OUT" | grep 'time=' | sed -n 's/.*time=\([0-9.]*\).*/\1/p')
+            delays+=("$DELAY")
+        done
+        if [[ $ok -eq 1 ]]; then
+            AVG=$(echo "${delays[@]}" | tr ' ' '\n' | awk '{s+=$1}END{print (NR>0)?s/NR:0}')
+            MAX=$(echo "${delays[@]}" | tr ' ' '\n' | sort -n | tail -1)
+            MIN=$(echo "${delays[@]}" | tr ' ' '\n' | sort -n | head -1)
+            JITTER=$(echo "$MAX - $MIN" | bc)
+            SCORE=$(echo "$AVG + 2*$JITTER" | bc)
+            if (( $(echo "$SCORE < $best_score" | bc -l) )); then
+                best_score=$SCORE
+                best_mtu=$mtu
+            fi
+        fi
+    done
+    echo $best_mtu
 }
 
 run_optimization() {
@@ -283,60 +290,37 @@ run_optimization() {
     echo "enabled" > $STATUS_FILE
 
     while [ "$(cat $STATUS_FILE 2>/dev/null)" == "enabled" ]; do
-        if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-            if test_jumbo_supported "$IFACE"; then
+        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
+            sudo ip link set dev "$IFACE" mtu 9000
+            local jumbo_ok=1
+            for i in {1..3}; do
+                ping -I "$IFACE" -M do -s 8972 -c 1 -W 1 "$DST" >/dev/null 2>&1 || { jumbo_ok=0; break; }
+            done
+            if [[ $jumbo_ok -eq 1 || "$FORCE_JUMBO" =~ ^[yY]$ ]]; then
                 MTU=9000
-                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                    MSS=$(calc_mss $MTU)
-                    echo -e "${CYAN}Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
-                    apply_settings $IFACE $MTU $MSS
-                else
-                    echo -e "${RED}Jumbo Frame not working to $DST. Skipping.${NC}"
-                fi
+                MSS=8960
+                echo -e "${CYAN}Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+                apply_settings "$IFACE" "$MTU" "$MSS"
+                for ((i=0; i<$INTERVAL; i++)); do
+                    [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
+                    sleep 1
+                done
+                continue
             else
-                echo -e "${RED}Jumbo Frame not supported by $IFACE, skipping.${NC}"
-            fi
-        else
-            MTU=$(test_mtu $IFACE $DST)
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}Could not detect a safe MTU. Skipping...${NC}"
-            else
-                echo -e "${CYAN}Optimal MTU detected: $MTU${NC}"
-                MSS=$(calc_mss $MTU)
-                echo -e "${CYAN}Applying MTU=$MTU and MSS=$MSS on $IFACE${NC}"
-                apply_settings $IFACE $MTU $MSS
+                echo -e "${RED}Jumbo Frame not working to $DST. Reverting to normal MTU search.${NC}"
+                sudo ip link set dev "$IFACE" mtu 1500
             fi
         fi
+        # Find best MTU using latency/jitter
+        MTU=$(find_best_mtu "$IFACE" "$DST")
+        MSS=$((MTU-40))
+        echo -e "${CYAN}Optimal MTU detected: $MTU, MSS: $MSS${NC}"
+        apply_settings "$IFACE" "$MTU" "$MSS"
         for ((i=0; i<$INTERVAL; i++)); do
             [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
             sleep 1
         done
-        [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
     done
-}
-
-enable_disable_service() {
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo -e "${YELLOW}You must configure optimization first.${NC}"
-        configure_settings
-        [ ! -f "$CONFIG_FILE" ] && return
-    fi
-    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
-    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
-    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
-        disable_service
-    else
-        enable_service
-    fi
-}
-
-delete_settings() {
-    read -p "Are you sure you want to reset all network optimization settings? (y/n): " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Reset cancelled.${NC}"; return; }
-    reset_settings
-    rm -f $STATUS_FILE
-    echo -e "${RED}All optimizer settings and status removed.${NC}"
-    sleep 1
 }
 
 if [ "$1" = "--auto" ]; then
@@ -344,84 +328,42 @@ if [ "$1" = "--auto" ]; then
         echo "No config file found at $CONFIG_FILE, waiting for configuration..."
         while [ ! -f "$CONFIG_FILE" ]; do sleep 10; done
     fi
-    while true; do
-        . "$CONFIG_FILE"
-        IFACE=$(get_main_interface)
-        echo "enabled" > $STATUS_FILE
-
-        if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-            if test_jumbo_supported "$IFACE"; then
-                MTU=9000
-                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                    MSS=$(calc_mss $MTU)
-                    apply_settings $IFACE $MTU $MSS
-                fi
-            fi
-        else
-            MTU=$(test_mtu $IFACE $DST)
-            if [ $? -eq 0 ]; then
-                MSS=$(calc_mss $MTU)
-                apply_settings $IFACE $MTU $MSS
-            fi
-        fi
-        for ((i=0; i<$INTERVAL; i++)); do
-            [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
-            sleep 1
-        done
-        [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
-    done
+    run_optimization
     exit 0
 fi
 
+# Main menu loop
 while true; do
     clear
-    echo -e "${CYAN}"
-    echo "╔════════════════════════════════════════════════╗"
-    echo "║      MTUSO - Smart MTU/MSS Optimizer          ║"
-    echo "╚════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-    if [ ! -f "$INSTALL_PATH" ]; then
-        echo "  1) Install MTUSO"
-        echo "  2) Exit"
-        show_status
-        read -p "Choose an option [1-2]: " CHOICE
-        case $CHOICE in
-            1)
-                install_deps
-                self_install
-                sleep 1
-                ;;
-            2)
-                echo "Bye!"; exit 0 ;;
-            *)
-                echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
-        esac
-        continue
-    fi
-
-    echo -n "  1) Configure & Start Optimization [status: "
-    get_optimization_status
-    echo -n "  2) "
-    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
-    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
-    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
-        echo -n "Disable Service "
+    echo -e "${CYAN}========= MTUSO - Smart MTU/MSS Optimizer =========${NC}"
+    echo "1) Configure & Save Optimization"
+    echo -n "2) Service status: "
+    if systemctl is-active --quiet mtuso; then
+        echo "ON"
     else
-        echo -n "Enable Service  "
+        echo "OFF"
     fi
-    echo -n "[status: "
-    get_service_status
-    echo "  3) Reset All Settings"
-    echo "  4) Uninstall MTUSO"
-    echo "  5) Exit"
-    show_status
-    read -p "Choose an option [1-5]: " CHOICE
+    echo -n "3) Service autostart: "
+    if systemctl is-enabled --quiet mtuso; then
+        echo "ON"
+    else
+        echo "OFF"
+    fi
+    echo "4) Restart Service"
+    echo "5) Status"
+    echo "6) Reset All Settings"
+    echo "7) Uninstall"
+    echo "8) Exit"
+    read -p "Choose an option [1-8]: " CHOICE
     case $CHOICE in
         1) configure_settings ;;
-        2) enable_disable_service ;;
-        3) delete_settings ;;
-        4) uninstall_all ;;
-        5) echo "Bye!"; exit 0 ;;
-        *) echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
+        2) toggle_service ;;
+        3) toggle_autostart ;;
+        4) restart_service ;;
+        5) show_status; read -p "Press enter to continue..." ;;
+        6) delete_settings ;;
+        7) uninstall_all ;;
+        8) echo "Bye!"; exit 0 ;;
+        *) echo "Invalid option!"; sleep 1 ;;
     esac
 done
