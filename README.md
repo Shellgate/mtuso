@@ -45,19 +45,12 @@ You’ll see the interactive menu:
 
 ---
 
-## 📦 Files
-
-- `mtuso-installer.sh` &nbsp;→&nbsp; One-line installer, menu, service manager
-- `mtuso.sh` &nbsp;→&nbsp; The main optimizer script
-
----
-
 ## ⚡️ Uninstall
 
 You can safely uninstall everything via the menu, or simply:
 
 ```bash
-mtuso-installer.sh --uninstall
+mtuso.sh --uninstall
 ```
 
 ---
