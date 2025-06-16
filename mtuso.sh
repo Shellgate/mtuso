@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# MTUSO - Smart MTU/MSS Optimizer & Installer
+# MTUSO - All-in-One Smart MTU/MSS Optimizer & Installer
 # Author: Shellgate
 
 RED='\033[1;31m'
@@ -8,6 +8,7 @@ GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[1;34m'
 CYAN='\033[1;36m'
+GRAY='\033[1;30m'
 NC='\033[0m'
 
 SELF_URL="https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso.sh"
@@ -17,12 +18,16 @@ STATUS_FILE="/tmp/.smart_mtu_mss_status"
 
 # --- Dependency Check & Install ---
 install_deps() {
+    echo -e "${CYAN}[MTUSO] Installing dependencies...${NC}"
     sudo apt-get update -y
     sudo apt-get install -y iproute2 net-tools bc curl
+    echo -e "${GREEN}[MTUSO] Dependencies are installed.${NC}"
+    sleep 1
 }
 
 # --- Self-Update ---
 self_update() {
+    echo -e "${CYAN}[MTUSO] Updating to the latest version...${NC}"
     sudo curl -fsSL "$SELF_URL" -o "$INSTALL_PATH"
     sudo chmod +x "$INSTALL_PATH"
     echo -e "${GREEN}MTUSO has been updated successfully.${NC}"
@@ -122,21 +127,27 @@ reset_settings() {
 
 show_status() {
     local SYS_STATUS RUN_STATUS APP_STATUS
-    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
-    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
-    if [ -f "$STATUS_FILE" ]; then
-        SVAL=$(cat "$STATUS_FILE")
-        if [[ "$SVAL" == "paused" ]]; then
-            APP_STATUS="${YELLOW}PAUSED${NC}"
-        elif [[ "$SVAL" == "enabled" ]]; then
-            APP_STATUS="${GREEN}ENABLED${NC}"
-        else
-            APP_STATUS="${RED}DISABLED${NC}"
-        fi
-    elif [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
-        APP_STATUS="${GREEN}ENABLED${NC}"
+    if [ ! -f "$INSTALL_PATH" ]; then
+        APP_STATUS="${RED}NOT INSTALLED${NC}"
     else
-        APP_STATUS="${RED}DISABLED${NC}"
+        SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
+        RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
+        if [ -f "$STATUS_FILE" ]; then
+            SVAL=$(cat "$STATUS_FILE")
+            if [[ "$SVAL" == "paused" ]]; then
+                APP_STATUS="${YELLOW}PAUSED${NC}"
+            elif [[ "$SVAL" == "enabled" ]]; then
+                APP_STATUS="${GREEN}ENABLED${NC}"
+            else
+                APP_STATUS="${RED}DISABLED${NC}"
+            fi
+        elif [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+            APP_STATUS="${GREEN}ENABLED${NC}"
+        elif [ "$SYS_STATUS" = "enabled" ]; then
+            APP_STATUS="${YELLOW}INSTALLED, but NOT RUNNING${NC}"
+        else
+            APP_STATUS="${YELLOW}INSTALLED, but DISABLED${NC}"
+        fi
     fi
     echo -e "\nStatus: $APP_STATUS"
 }
@@ -151,13 +162,24 @@ main_menu() {
     echo -e "${NC}"
     echo "  1) Install or Update Dependencies"
     echo "  2) Self-Update (Download latest version)"
-    echo "  3) Configure & Start Optimization"
-    echo "  4) Pause Optimization"
-    echo "  5) Resume Optimization"
-    echo "  6) Disable & Stop Service"
-    echo "  7) Enable & Start as Service"
-    echo "  8) Reset All Settings"
-    echo "  9) Uninstall MTUSO"
+    if [ -f "$INSTALL_PATH" ]; then
+        echo "  3) Configure & Start Optimization"
+        echo "  4) Pause Optimization"
+        echo "  5) Resume Optimization"
+        echo "  6) Disable & Stop Service"
+        echo "  7) Enable & Start as Service"
+        echo "  8) Reset All Settings"
+        echo "  9) Uninstall MTUSO"
+    else
+        # Options disabled when not installed
+        echo -e "  ${GRAY}3) Configure & Start Optimization   [Install first]${NC}"
+        echo -e "  ${GRAY}4) Pause Optimization               [Install first]${NC}"
+        echo -e "  ${GRAY}5) Resume Optimization              [Install first]${NC}"
+        echo -e "  ${GRAY}6) Disable & Stop Service           [Install first]${NC}"
+        echo -e "  ${GRAY}7) Enable & Start as Service        [Install first]${NC}"
+        echo -e "  ${GRAY}8) Reset All Settings               [Install first]${NC}"
+        echo -e "  ${GRAY}9) Uninstall MTUSO                  [Install first]${NC}"
+    fi
     echo " 10) Exit"
     show_status
 }
@@ -211,7 +233,6 @@ delete_settings() {
 
 # --- CLI Arguments for Service Start ---
 if [ "$1" = "--auto" ]; then
-    # Auto mode for systemd service
     DST="8.8.8.8"
     INTERVAL=60
     JUMBO="n"
@@ -239,13 +260,13 @@ while true; do
     case $CHOICE in
         1) install_deps ;;
         2) self_update ;;
-        3) run_optimization ;;
-        4) pause_optimization ;;
-        5) resume_optimization ;;
-        6) disable_service ;;
-        7) setup_service ;;
-        8) delete_settings ;;
-        9) uninstall_all ;;
+        3) [ -f "$INSTALL_PATH" ] && run_optimization || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
+        4) [ -f "$INSTALL_PATH" ] && pause_optimization || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
+        5) [ -f "$INSTALL_PATH" ] && resume_optimization || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
+        6) [ -f "$INSTALL_PATH" ] && disable_service || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
+        7) [ -f "$INSTALL_PATH" ] && setup_service || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
+        8) [ -f "$INSTALL_PATH" ] && delete_settings || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
+        9) [ -f "$INSTALL_PATH" ] && uninstall_all || { echo -e "${RED}Install MTUSO first.${NC}"; sleep 1; } ;;
         10) echo "Bye!"; exit 0 ;;
         *) echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
     esac
