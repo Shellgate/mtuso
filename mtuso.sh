@@ -125,7 +125,7 @@ configure_settings() {
     IFACE=$(get_main_interface)
     if [ -z "$IFACE" ]; then
         echo -e "${RED}No main network interface detected.${NC}"
-        return
+        return 1
     fi
     echo -e "${CYAN}Detected main interface: $IFACE${NC}"
 
@@ -176,12 +176,16 @@ configure_settings() {
         FORCE_JUMBO="n"
     fi
 
-    sudo tee "$CONFIG_FILE" >/dev/null <<EOF
+    if ! sudo tee "$CONFIG_FILE" >/dev/null <<EOF
 DST=$DST
 INTERVAL=$INTERVAL
 JUMBO=$JUMBO
 FORCE_JUMBO=$FORCE_JUMBO
 EOF
+    then
+        echo -e "${RED}Failed to write config file!${NC}"
+        return 1
+    fi
     echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
 
     if [ ! -f "$INSTALL_PATH" ]; then
@@ -192,7 +196,10 @@ EOF
         echo -e "${RED}Script missing or invalid shebang (#!/bin/bash)${NC}"
         return 1
     fi
-    sudo chmod +x "$INSTALL_PATH"
+    if ! sudo chmod +x "$INSTALL_PATH"; then
+        echo -e "${RED}Failed to make $INSTALL_PATH executable!${NC}"
+        return 1
+    fi
 
     setup_service
     sudo systemctl daemon-reload
