@@ -13,7 +13,6 @@ SYSTEMD_SERVICE="/etc/systemd/system/mtuso.service"
 STATUS_FILE="/tmp/.smart_mtu_mss_status"
 CONFIG_FILE="/etc/mtuso.conf"
 
-# =========[ Dependencies ]=========
 install_deps() {
     echo -e "${CYAN}Installing dependencies...${NC}"
     sudo apt-get update -y
@@ -21,7 +20,6 @@ install_deps() {
     echo -e "${GREEN}Dependencies installed.${NC}"
 }
 
-# =========[ Self Install/Upgrade ]=========
 self_install() {
     echo -e "${CYAN}Installing MTUSO...${NC}"
     sudo curl -fsSL "$SELF_URL" -o "$INSTALL_PATH"
@@ -37,7 +35,6 @@ self_install() {
     sleep 1
 }
 
-# =========[ Service Setup ]=========
 setup_service() {
     cat <<EOF | sudo tee "$SYSTEMD_SERVICE" >/dev/null
 [Unit]
@@ -55,7 +52,6 @@ EOF
     sudo systemctl daemon-reload
 }
 
-# =========[ Helpers ]=========
 get_main_interface() {
     ip route | grep '^default' | awk '{print $5}' | head -n1
 }
@@ -108,7 +104,6 @@ test_jumbo_supported() {
     fi
 }
 
-# =========[ Network Apply/Reset ]=========
 apply_settings() {
     local IFACE=$1
     local MTU=$2
@@ -136,20 +131,16 @@ reset_settings() {
     sleep 1
 }
 
-# =========[ Status ]=========
 show_status() {
-    echo -n "Service status: "
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        echo -e "${GREEN}ON${NC}"
-    else
-        echo -e "${RED}OFF${NC}"
-    fi
-    echo -n "Service autostart: "
-    if systemctl is-enabled --quiet mtuso 2>/dev/null; then
-        echo -e "${GREEN}ON${NC}"
-    else
-        echo -e "${RED}OFF${NC}"
-    fi
+    echo -e "${CYAN}Service status:${NC}"
+    systemctl status mtuso --no-pager -l | head -20
+    echo -e "${CYAN}Recent logs:${NC}"
+    sudo journalctl -u mtuso -n 10 --no-pager
+}
+
+show_live_log() {
+    echo -e "${CYAN}Showing live log for mtuso service. Press Ctrl+C to exit.${NC}"
+    sudo journalctl -u mtuso -f
 }
 
 toggle_service() {
@@ -185,12 +176,10 @@ restart_service() {
     sleep 1
 }
 
-# =========[ Uninstall/Reset ]=========
 uninstall_all() {
     read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Uninstall cancelled.${NC}"; return; }
 
-    # Reset network settings first
     IFACE=$(get_main_interface)
     [ -n "$IFACE" ] && sudo ip link set dev $IFACE mtu 1500
     sudo iptables -t mangle -F
@@ -216,7 +205,6 @@ delete_settings() {
     sleep 1
 }
 
-# =========[ MTU Discovery ]=========
 find_best_mtu() {
     local IFACE=$1
     local DST=$2
@@ -247,7 +235,6 @@ find_best_mtu() {
     echo $best_mtu
 }
 
-# =========[ Configure & Save ]=========
 configure_settings() {
     local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
     IFACE=$(get_main_interface)
@@ -306,7 +293,6 @@ EOF
     sleep 1
 }
 
-# =========[ Optimization Loop ]=========
 run_optimization() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${YELLOW}No configuration found. Please complete configuration first.${NC}"
@@ -352,7 +338,6 @@ run_optimization() {
     done
 }
 
-# =========[ Service Mode ]=========
 if [ "$1" = "--auto" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found at $CONFIG_FILE, waiting for configuration..."
@@ -362,7 +347,6 @@ if [ "$1" = "--auto" ]; then
     exit 0
 fi
 
-# =========[ Main Menu ]=========
 while true; do
     clear
     echo -e "${CYAN}========= MTUSO - Smart MTU/MSS Optimizer =========${NC}"
@@ -381,19 +365,21 @@ while true; do
     fi
     echo "4) Restart Service"
     echo "5) Status"
-    echo "6) Reset All Settings"
-    echo "7) Uninstall"
-    echo "8) Exit"
-    read -p "Choose an option [1-8]: " CHOICE
+    echo "6) Live Log"
+    echo "7) Reset All Settings"
+    echo "8) Uninstall"
+    echo "9) Exit"
+    read -p "Choose an option [1-9]: " CHOICE
     case $CHOICE in
         1) configure_settings ;;
         2) toggle_service ;;
         3) toggle_autostart ;;
         4) restart_service ;;
         5) show_status; read -p "Press enter to continue..." ;;
-        6) delete_settings ;;
-        7) uninstall_all ;;
-        8) echo "Bye!"; exit 0 ;;
+        6) show_live_log ;;
+        7) delete_settings ;;
+        8) uninstall_all ;;
+        9) echo "Bye!"; exit 0 ;;
         *) echo "Invalid option!"; sleep 1 ;;
     esac
 done
