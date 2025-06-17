@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# MTUSO - Smart MTU/MSS Optimizer (Clean Minimal English Version, fixed systemd & duration bug)
+# MTUSO - Smart MTU/MSS Optimizer (Clean Minimal English Version, Final Revision)
 # Author: Shellgate | Last Update: 2025-06-17
 
 RED='\033[1;31m'
@@ -20,7 +20,8 @@ LOCK_FILE="/tmp/mtuso.lock"
 FAIL_COUNT_FILE="/tmp/.mtuso_failcount"
 MAX_FAILS=5
 
-# Prevent concurrent runs
+# Prevent concurrent runs and cleanup on exit
+trap 'rm -f "$LOCK_FILE"; exit' INT TERM EXIT
 exec 200>"$LOCK_FILE"
 flock -n 200 || { echo -e "${YELLOW}Another instance of MTUSO is already running. Exiting.${NC}"; exit 1; }
 
@@ -129,13 +130,13 @@ disable_service() {
 }
 
 show_status() {
-    if [ ! -f "$INSTALL_PATH" ]; then echo -e "Status: ${RED}NOT INSTALLED${NC}"; return; fi
-    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
-    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
+    local sys_status run_status
+    sys_status=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
+    run_status=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
     echo -n "Service: "
-    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+    if [ "$sys_status" = "enabled" ] && [ "$run_status" = "active" ]; then
         echo -e "${GREEN}ENABLED & RUNNING${NC}"
-    elif [ "$SYS_STATUS" = "enabled" ]; then
+    elif [ "$sys_status" = "enabled" ]; then
         echo -e "${YELLOW}ENABLED, but NOT RUNNING${NC}"
     else
         echo -e "${YELLOW}INSTALLED, but DISABLED${NC}"
