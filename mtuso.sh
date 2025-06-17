@@ -121,6 +121,7 @@ show_service_error() {
 
 initial_install() {
     install_deps || return 1
+
     if [ ! -f "$INSTALL_PATH" ]; then
         sudo cp "$0" "$INSTALL_PATH"
     fi
@@ -132,7 +133,9 @@ initial_install() {
         echo -e "${RED}Failed to make $INSTALL_PATH executable!${NC}"
         return 1
     fi
+
     install_service_always
+
     local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
     IFACE=$(get_main_interface)
     if [ -z "$IFACE" ]; then
@@ -142,6 +145,7 @@ initial_install() {
     local ORIG_MTU
     ORIG_MTU=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
     echo "ORIGINAL_MTU=$ORIG_MTU" | sudo tee "$ORIGINAL_MTU_FILE" >/dev/null
+
     while true; do
         read -p "Enter destination IP or domain for MTU test: " DST
         if [ -z "$DST" ]; then
@@ -180,7 +184,6 @@ initial_install() {
             FORCE_JUMBO="n"
         fi
     else
-        echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
         JUMBO="n"
         FORCE_JUMBO="n"
     fi
@@ -194,6 +197,7 @@ EOF
         echo -e "${RED}Failed to write config file!${NC}"
         return 1
     fi
+
     while true; do
         read -p "Start the service now? (y/n): " ANS
         if [[ "$ANS" =~ ^[yYnN]$ ]]; then break; fi
@@ -291,7 +295,6 @@ edit_config_service() {
             FORCE_JUMBO="n"
         fi
     else
-        echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
         JUMBO="n"
         FORCE_JUMBO="n"
     fi
