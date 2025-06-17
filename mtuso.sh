@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# MTUSO - Smart MTU/MSS Optimizer (Clean Minimal English Version, Final Revision)
+# MTUSO - Smart MTU/MSS Optimizer (Final Clean Version, Full Uninstall & Exec Fix)
 # Author: Shellgate | Last Update: 2025-06-17
 
 RED='\033[1;31m'
@@ -20,12 +20,10 @@ LOCK_FILE="/tmp/mtuso.lock"
 FAIL_COUNT_FILE="/tmp/.mtuso_failcount"
 MAX_FAILS=5
 
-# Prevent concurrent runs and cleanup on exit
 trap 'rm -f "$LOCK_FILE"; exit' INT TERM EXIT
 exec 200>"$LOCK_FILE"
 flock -n 200 || { echo -e "${YELLOW}Another instance of MTUSO is already running. Exiting.${NC}"; exit 1; }
 
-# Dependencies check
 for tool in ip ethtool tracepath ping bc logger tee flock; do
     command -v $tool >/dev/null 2>&1 || { echo -e "${RED}[ERROR] $tool not found! Please install it.${NC}"; exit 1; }
 done
@@ -421,36 +419,33 @@ uninstall_all() {
     if prompt_yesno "Are you sure you want to uninstall MTUSO and remove all settings and logs?"; then
         sudo systemctl stop mtuso 2>/dev/null
         sudo systemctl disable mtuso 2>/dev/null
-        local failed=0
-        declare -A files_to_remove=(
-            ["Systemd service"]="$SYSTEMD_SERVICE"
-            ["Script"]="$INSTALL_PATH"
-            ["Config"]="$CONFIG_FILE"
-            ["Status"]="$STATUS_FILE"
-            ["Log"]="$LOG_FILE"
-            ["Fail count"]="$FAIL_COUNT_FILE"
-            ["Lock"]="$LOCK_FILE"
+        sudo systemctl reset-failed mtuso 2>/dev/null
+        # Remove possible templated services
+        for unit in $(systemctl list-unit-files | grep -E '^mtuso(@.*)?\.service' | awk '{print $1}'); do
+            sudo systemctl stop "$unit" 2>/dev/null
+            sudo systemctl disable "$unit" 2>/dev/null
+            sudo rm -f "/etc/systemd/system/$unit"
+        done
+        sudo rm -f "$SYSTEMD_SERVICE"
+        sudo systemctl daemon-reload
+        sudo systemctl reset-failed 2>/dev/null
+        files=(
+            "$INSTALL_PATH"
+            "$CONFIG_FILE"
+            "$STATUS_FILE"
+            "$LOG_FILE"
+            "$FAIL_COUNT_FILE"
+            "$LOCK_FILE"
         )
-        for key in "${!files_to_remove[@]}"; do
-            f="${files_to_remove[$key]}"
+        for f in "${files[@]}"; do
             sudo rm -f "$f"
-            if [ -e "$f" ]; then
-                echo -e "${RED}Failed to remove $key ($f)${NC}"
-                failed=1
-            else
-                echo -e "${GREEN}$key removed${NC}"
-            fi
         done
         iptables_del_tcpmss
-        sudo systemctl daemon-reload
-        if [ $failed -eq 0 ]; then
-            log_msg "INFO" "MTUSO completely uninstalled."
-            echo -e "${GREEN}MTUSO has been completely removed.${NC}"
-            exit 0
-        else
-            log_msg "ERROR" "Some files could not be removed. Manual cleanup may be needed."
-            echo -e "${RED}Some files could not be removed. Please check manually.${NC}"
-        fi
+        echo
+        echo -e "${GREEN}All MTUSO files, configs, logs and services have been removed.${NC}"
+        log_msg "INFO" "MTUSO completely uninstalled and all files/services removed."
+        echo -e "${YELLOW}If you still see 'mtuso' command, try running 'hash -r' or restart your shell.${NC}"
+        exit 0
     fi
 }
 
