@@ -1,14 +1,12 @@
 #!/bin/bash
 
-# MTUSO - Smart MTU/MSS Optimizer (Ultra Improved Version, English)
+# MTUSO - Smart MTU/MSS Optimizer (Clean Minimal English Version)
 # Author: Shellgate | Last Update: 2025-06-17
 
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[1;34m'
 CYAN='\033[1;36m'
-GRAY='\033[1;30m'
 NC='\033[0m'
 
 SELF_URL="https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso.sh"
@@ -22,16 +20,15 @@ LOCK_FILE="/tmp/mtuso.lock"
 FAIL_COUNT_FILE="/tmp/.mtuso_failcount"
 MAX_FAILS=5
 
-# --- Prevent concurrent runs ---
+# Prevent concurrent runs
 exec 200>"$LOCK_FILE"
 flock -n 200 || { echo -e "${YELLOW}Another instance of MTUSO is already running. Exiting.${NC}"; exit 1; }
 
-# --- Check dependencies ---
+# Dependencies check
 for tool in ip ethtool tracepath ping bc logger tee flock; do
     command -v $tool >/dev/null 2>&1 || { echo -e "${RED}[ERROR] $tool not found! Please install it.${NC}"; exit 1; }
 done
 
-# --- Check root/sudo access ---
 if [[ $EUID -ne 0 ]]; then
     if ! sudo -v 2>/dev/null; then
         echo -e "${RED}This script requires sudo privileges! Run as root or use sudo.${NC}"
@@ -39,7 +36,7 @@ if [[ $EUID -ne 0 ]]; then
     fi
 fi
 
-# --- Helper functions ---
+# Helper functions
 prompt_yesno() {
     while true; do
         read -p "$1 (y/n): " yn
@@ -51,17 +48,7 @@ prompt_yesno() {
     done
 }
 
-prompt_menu() {
-    local CHOICE
-    while true; do
-        read -p "$1" CHOICE
-        [[ "$CHOICE" =~ ^[0-9]+$ ]] && echo "$CHOICE" && return 0
-        echo -e "${YELLOW}Please enter a valid number.${NC}"
-    done
-}
-
 log_msg() {
-    # $1: level | $2: message
     local lvl="$1"
     local msg="$2"
     local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
@@ -75,7 +62,25 @@ suggest_logrotate() {
     fi
 }
 
-show_live_log()    { echo -e "${CYAN}Live log (Ctrl+C to exit):${NC}"; sudo touch "$LOG_FILE"; sudo tail -f "$LOG_FILE"; }
+# Log viewer
+view_log() {
+    while true; do
+        echo -e "\nLog viewing options:"
+        echo " a) Tail live log (Ctrl+C to exit)"
+        echo " b) Show last 40 lines"
+        echo " c) Show systemd journal log"
+        echo " d) Back to main menu"
+        read -p "Choose [a-d]: " lopt
+        case "$lopt" in
+            a|A) sudo touch "$LOG_FILE"; sudo tail -f "$LOG_FILE";;
+            b|B) sudo tail -n 40 "$LOG_FILE"; read -p "Press Enter to continue...";;
+            c|C) sudo journalctl -u mtuso -n 40; read -p "Press Enter to continue...";;
+            d|D) break;;
+            *) echo -e "${YELLOW}Invalid option.${NC}";;
+        esac
+    done
+}
+
 clear_log() {
     if prompt_yesno "Are you sure you want to clear the log file?"; then
         sudo systemctl stop mtuso 2>/dev/null
@@ -84,35 +89,9 @@ clear_log() {
         log_msg "INFO" "Log file cleared."
     fi
 }
-show_journal_log() { echo -e "${CYAN}Systemd journal (Ctrl+C to exit):${NC}"; sudo journalctl -u mtuso -f; }
 
-install_deps() {
-    echo -e "${CYAN}Installing dependencies...${NC}"
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update -y
-        sudo apt-get install -y iproute2 net-tools bc curl ethtool tracepath logger flock
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y iproute net-tools bc curl ethtool iputils-tracepath util-linux
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y iproute net-tools bc curl ethtool iputils util-linux
-    else
-        log_msg "ERROR" "No supported package manager found! Please install dependencies manually."
-        exit 1
-    fi
-    echo -e "${GREEN}Dependencies installed.${NC}"
-}
-
-self_install() {
-    echo -e "${CYAN}Installing MTUSO script...${NC}"
-    sudo curl -fsSL "$SELF_URL" -o "$INSTALL_PATH"
-    sudo chmod +x "$INSTALL_PATH"
-    sudo chown root:root "$INSTALL_PATH"
-    echo -e "${GREEN}MTUSO installed to $INSTALL_PATH${NC}"
-    sleep 1
-}
-
+# Service management
 setup_service() {
-    # Only overwrite the systemd unit file if contents have changed
     local TMPFILE="/tmp/.mtuso.service.tmp"
     cat <<EOF > "$TMPFILE"
 [Unit]
@@ -136,7 +115,6 @@ EOF
         log_msg "INFO" "Systemd service file created/updated."
     else
         rm -f "$TMPFILE"
-        log_msg "INFO" "Systemd service file unchanged."
     fi
 }
 
@@ -155,12 +133,7 @@ disable_service() {
     sleep 1
 }
 
-restart_service() {
-    sudo systemctl restart mtuso
-    log_msg "INFO" "MTUSO service restarted."
-    sleep 1
-}
-
+# Status
 show_status() {
     if [ ! -f "$INSTALL_PATH" ]; then echo -e "Status: ${RED}NOT INSTALLED${NC}"; return; fi
     SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
@@ -181,11 +154,7 @@ show_status() {
     fi
 }
 
-show_service_status() {
-    echo -e "${CYAN}Systemd service status:${NC}"
-    sudo systemctl status mtuso --no-pager
-}
-
+# Network helpers
 get_all_interfaces() {
     ip -o link show | awk -F': ' '{print $2}' | grep -v lo
 }
@@ -197,23 +166,19 @@ choose_interface() {
         echo -e "${CYAN}Available network interfaces:${NC}"
         for idx in "${!interfaces[@]}"; do echo "  $((idx+1))) ${interfaces[$idx]}"; done
         while true; do
-            prompt_menu "Choose interface [1-${#interfaces[@]}]: "
-            read CHOICE
+            read -p "Choose interface [1-${#interfaces[@]}]: " CHOICE
             if [[ "$CHOICE" =~ ^[1-9][0-9]*$ ]] && [ "$CHOICE" -le "${#interfaces[@]}" ]; then
                 echo "${interfaces[$((CHOICE-1))]}"
                 break
             else
-                echo -e "${YELLOW}Invalid choice.${NC}"
-            fi
+                echo -e "${YELLOW}Invalid choice.${NC}"; fi
         done
     fi
 }
-
 check_iface_health() {
     local IFACE="$1"
     ip link show "$IFACE" | grep -q "state UP" || { log_msg "ERROR" "Interface $IFACE is down"; exit 1; }
 }
-
 check_jumbo_ethtool() {
     local IFACE="$1"
     if ethtool "$IFACE" 2>/dev/null | grep -qi jumbo; then
@@ -222,7 +187,6 @@ check_jumbo_ethtool() {
         return 1
     fi
 }
-
 validate_ip_or_host() {
     local DST="$1"
     if [[ "$DST" =~ ":" ]]; then
@@ -232,7 +196,6 @@ validate_ip_or_host() {
     fi
     [ $? -eq 0 ] && return 0 || { log_msg "ERROR" "Invalid IP address or hostname."; return 1; }
 }
-
 parse_duration() {
     local input="$1" total=0 rest="$input" matched=0
     while [[ -n "$rest" ]]; do
@@ -245,7 +208,6 @@ parse_duration() {
     done
     [[ $matched -eq 1 ]] && echo $total || echo 0
 }
-
 test_mtu() {
     local IFACE=$1 DST=$2 MTU
     if command -v tracepath >/dev/null 2>&1; then
@@ -275,7 +237,6 @@ test_mtu() {
         return 0
     fi
 }
-
 test_jumbo_supported() {
     local IFACE=$1
     check_jumbo_ethtool "$IFACE" || { log_msg "WARN" "Jumbo not supported by ethtool"; return 1; }
@@ -284,15 +245,12 @@ test_jumbo_supported() {
     sudo ip link set dev "$IFACE" up
     sudo ip link set dev "$IFACE" mtu 9000 2>/dev/null && { sudo ip link set dev "$IFACE" mtu "$ORIG_MTU"; log_msg "INFO" "Jumbo test success"; return 0; } || { log_msg "WARN" "Jumbo test failed"; return 1; }
 }
-
 calc_mss() { local MTU=$1; [[ "$MTU" -ge 1280 ]] && echo $((MTU-40)) || echo $((MTU-48)); }
-
 iptables_add_tcpmss() {
     local MSS=$1
     sudo iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS -m comment --comment "$COMMENT" 2>/dev/null || \
     sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS -m comment --comment "$COMMENT"
 }
-
 iptables_del_tcpmss() {
     for chain in FORWARD INPUT OUTPUT; do
         while sudo iptables -t mangle -C $chain -p tcp --tcp-flags SYN,RST SYN -j TCPMSS -m comment --comment "$COMMENT" 2>/dev/null; do
@@ -300,7 +258,6 @@ iptables_del_tcpmss() {
         done
     done
 }
-
 apply_settings() {
     local IFACE=$1 MTU=$2 MSS=$3 DST=$4
     local ORIG_MTU; ORIG_MTU=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
@@ -315,57 +272,6 @@ apply_settings() {
     log_msg "INFO" "Applied MTU $MTU & MSS $MSS on $IFACE"
     return 0
 }
-
-run_once() {
-    if [ ! -f "$CONFIG_FILE" ]; then log_msg "WARN" "No configuration found. Please configure first."; configure_settings; [ ! -f "$CONFIG_FILE" ] && return; fi
-    . "$CONFIG_FILE"
-    IFACE="$IFACE"; check_iface_health "$IFACE"
-    DST="$DST"
-    exec > >(tee -a "$LOG_FILE") 2>&1
-    if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-        if [ "$FORCE" = "y" ] || [ "$FORCE" = "Y" ]; then
-            MTU=9000; MSS=$(calc_mss $MTU)
-            log_msg "INFO" "Force applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE"
-            apply_settings $IFACE $MTU $MSS "$DST"
-            if [[ "$DST" =~ ":" ]]; then
-                ping6 -I "$IFACE" -M do -s $((MTU-48)) -c 1 -W 1 "$DST" >/dev/null 2>&1 || log_msg "WARN" "Forced Jumbo Frame may not work to $DST"
-            else
-                ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1 || log_msg "WARN" "Forced Jumbo Frame may not work to $DST"
-            fi
-        else
-            if test_jumbo_supported "$IFACE"; then
-                MTU=9000
-                if [[ "$DST" =~ ":" ]]; then
-                    if ping6 -I "$IFACE" -M do -s $((MTU-48)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                        MSS=$(calc_mss $MTU)
-                        log_msg "INFO" "Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE"
-                        apply_settings $IFACE $MTU $MSS "$DST"
-                    else
-                        log_msg "WARN" "Jumbo Frame not working to $DST. Falling back."
-                        goto_normal_mtu "$IFACE" "$DST"
-                    fi
-                else
-                    if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                        MSS=$(calc_mss $MTU)
-                        log_msg "INFO" "Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE"
-                        apply_settings $IFACE $MTU $MSS "$DST"
-                    else
-                        log_msg "WARN" "Jumbo Frame not working to $DST. Falling back."
-                        goto_normal_mtu "$IFACE" "$DST"
-                    fi
-                fi
-            else
-                log_msg "WARN" "Jumbo Frame not supported by $IFACE. Falling back."
-                goto_normal_mtu "$IFACE" "$DST"
-            fi
-        fi
-    else
-        goto_normal_mtu "$IFACE" "$DST"
-    fi
-    log_msg "INFO" "One-time optimization finished."
-    read -p "Press Enter to continue..."
-}
-
 goto_normal_mtu() {
     local IFACE DST MTU MSS
     IFACE="$1"; DST="$2"
@@ -379,7 +285,6 @@ goto_normal_mtu() {
         apply_settings $IFACE $MTU $MSS "$DST"
     fi
 }
-
 run_optimization() {
     if [ ! -f "$CONFIG_FILE" ]; then log_msg "WARN" "No configuration found. Please configure first."; configure_settings; [ ! -f "$CONFIG_FILE" ] && return; fi
     . "$CONFIG_FILE"
@@ -436,17 +341,56 @@ run_optimization() {
     done
 }
 
-uninstall_all() {
-    if prompt_yesno "Are you sure you want to uninstall MTUSO and remove all settings and logs?"; then
-        sudo systemctl stop mtuso || true
-        sudo systemctl disable mtuso || true
-        sudo rm -f "$SYSTEMD_SERVICE" "$INSTALL_PATH" "$CONFIG_FILE" "$STATUS_FILE" "$LOG_FILE" "$FAIL_COUNT_FILE" "$LOCK_FILE"
-        iptables_del_tcpmss
-        sudo systemctl daemon-reload
-        log_msg "INFO" "MTUSO uninstalled and all files removed."
-        exit 0
+run_once() {
+    if [ ! -f "$CONFIG_FILE" ]; then log_msg "WARN" "No configuration found. Please configure first."; configure_settings; [ ! -f "$CONFIG_FILE" ] && return; fi
+    . "$CONFIG_FILE"
+    IFACE="$IFACE"; check_iface_health "$IFACE"
+    DST="$DST"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
+        if [ "$FORCE" = "y" ] || [ "$FORCE" = "Y" ]; then
+            MTU=9000; MSS=$(calc_mss $MTU)
+            log_msg "INFO" "Force applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE"
+            apply_settings $IFACE $MTU $MSS "$DST"
+            if [[ "$DST" =~ ":" ]]; then
+                ping6 -I "$IFACE" -M do -s $((MTU-48)) -c 1 -W 1 "$DST" >/dev/null 2>&1 || log_msg "WARN" "Forced Jumbo Frame may not work to $DST"
+            else
+                ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1 || log_msg "WARN" "Forced Jumbo Frame may not work to $DST"
+            fi
+        else
+            if test_jumbo_supported "$IFACE"; then
+                MTU=9000
+                if [[ "$DST" =~ ":" ]]; then
+                    if ping6 -I "$IFACE" -M do -s $((MTU-48)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                        MSS=$(calc_mss $MTU)
+                        log_msg "INFO" "Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE"
+                        apply_settings $IFACE $MTU $MSS "$DST"
+                    else
+                        log_msg "WARN" "Jumbo Frame not working to $DST. Falling back."
+                        goto_normal_mtu "$IFACE" "$DST"
+                    fi
+                else
+                    if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                        MSS=$(calc_mss $MTU)
+                        log_msg "INFO" "Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE"
+                        apply_settings $IFACE $MTU $MSS "$DST"
+                    else
+                        log_msg "WARN" "Jumbo Frame not working to $DST. Falling back."
+                        goto_normal_mtu "$IFACE" "$DST"
+                    fi
+                fi
+            else
+                log_msg "WARN" "Jumbo Frame not supported by $IFACE. Falling back."
+                goto_normal_mtu "$IFACE" "$DST"
+            fi
+        fi
+    else
+        goto_normal_mtu "$IFACE" "$DST"
     fi
+    log_msg "INFO" "One-time optimization finished."
+    read -p "Press Enter to continue..."
 }
+
 reset_settings() {
     if prompt_yesno "Are you sure you want to reset all network optimization settings?"; then
         . "$CONFIG_FILE" 2>/dev/null
@@ -455,6 +399,43 @@ reset_settings() {
         sudo rm -f "$CONFIG_FILE" "$LOG_FILE" "$FAIL_COUNT_FILE"
         log_msg "INFO" "All settings reset to default."
         sleep 1
+    fi
+}
+
+uninstall_all() {
+    if prompt_yesno "Are you sure you want to uninstall MTUSO and remove all settings and logs?"; then
+        sudo systemctl stop mtuso 2>/dev/null
+        sudo systemctl disable mtuso 2>/dev/null
+        local failed=0
+        declare -A files_to_remove=(
+            ["Systemd service"]="$SYSTEMD_SERVICE"
+            ["Script"]="$INSTALL_PATH"
+            ["Config"]="$CONFIG_FILE"
+            ["Status"]="$STATUS_FILE"
+            ["Log"]="$LOG_FILE"
+            ["Fail count"]="$FAIL_COUNT_FILE"
+            ["Lock"]="$LOCK_FILE"
+        )
+        for key in "${!files_to_remove[@]}"; do
+            f="${files_to_remove[$key]}"
+            sudo rm -f "$f"
+            if [ -e "$f" ]; then
+                echo -e "${RED}Failed to remove $key ($f)${NC}"
+                failed=1
+            else
+                echo -e "${GREEN}$key removed${NC}"
+            fi
+        done
+        iptables_del_tcpmss
+        sudo systemctl daemon-reload
+        if [ $failed -eq 0 ]; then
+            log_msg "INFO" "MTUSO completely uninstalled."
+            echo -e "${GREEN}MTUSO has been completely removed.${NC}"
+            exit 0
+        else
+            log_msg "ERROR" "Some files could not be removed. Manual cleanup may be needed."
+            echo -e "${RED}Some files could not be removed. Please check manually.${NC}"
+        fi
     fi
 }
 
@@ -500,21 +481,7 @@ enable_disable_service() {
     fi
 }
 
-run_dry() {
-    if [ ! -f "$CONFIG_FILE" ]; then log_msg "WARN" "No configuration found. Please configure first."; configure_settings; [ ! -f "$CONFIG_FILE" ] && return; fi
-    . "$CONFIG_FILE"
-    echo -e "${CYAN}DRY-RUN: The following steps would be performed:${NC}"
-    echo "- Interface: $IFACE"
-    echo "- Destination: $DST"
-    echo "- Interval: $INTERVAL"
-    echo "- Jumbo: $JUMBO"
-    echo "- Force: $FORCE"
-    echo "- Would check link, check jumbo support (ethtool), test MTU (tracepath), and apply iptables rule with comment '$COMMENT'."
-    echo "- Would log to $LOG_FILE and systemd journal."
-    read -p "Press Enter to continue..."
-}
-
-# --- Main menu ---
+# Main menu (7 key options)
 suggest_logrotate
 
 if [ "$1" = "--auto" ]; then run_optimization; exit 0; fi
@@ -522,38 +489,27 @@ if [ "$1" = "--auto" ]; then run_optimization; exit 0; fi
 while true; do
     clear
     echo -e "${CYAN}"
-    echo "╔════════════════════════════════════════════════╗"
-    echo "║      MTUSO - Smart MTU/MSS Optimizer          ║"
-    echo "╚════════════════════════════════════════════════╝"
+    echo "╔═══════════════════════════════════════════════╗"
+    echo "║   MTUSO - Smart MTU/MSS Optimizer            ║"
+    echo "╚═══════════════════════════════════════════════╝"
     echo -e "${NC}"
     show_status
-    echo "  1) Configure & Start Optimization (set parameters and begin optimizing)"
-    echo "  2) Enable/Disable Service (start/stop systemd service)"
-    echo "  3) Show Service Status (view current systemd status)"
-    echo "  4) Reset All Settings (reset config and revert changes)"
-    echo "  5) Show Live Log (tail file log in real time)"
-    echo "  6) Clear Log File (delete /var/log/mtuso.log)"
-    echo "  7) Show Journalctl Log (systemd logs)"
-    echo "  8) Run One-Time Optimization Now (no service, just once)"
-    echo "  9) Dry-run (simulate all changes, no apply)"
-    echo " 10) Restart Service (systemd restart)"
-    echo " 11) Uninstall MTUSO Completely (remove all traces)"
-    echo " 12) Exit"
-    prompt_menu "Choose an option [1-12]: "
-    read CHOICE
+    echo "  1) Configure & Start Optimization"
+    echo "  2) Enable/Disable Service"
+    echo "  3) Show Current Status"
+    echo "  4) View Log"
+    echo "  5) Reset All Settings"
+    echo "  6) Uninstall MTUSO Completely"
+    echo "  7) Exit"
+    read -p "Choose an option [1-7]: " CHOICE
     case $CHOICE in
         1) configure_settings; show_status; read -p "Press Enter to continue...";;
         2) enable_disable_service; show_status; read -p "Press Enter to continue...";;
-        3) show_service_status; read -p "Press Enter to continue...";;
-        4) reset_settings; show_status; read -p "Press Enter to continue...";;
-        5) show_live_log ;;
-        6) clear_log ;;
-        7) show_journal_log ;;
-        8) run_once ;;
-        9) run_dry ;;
-        10) restart_service; show_status; read -p "Press Enter to continue...";;
-        11) uninstall_all ;;
-        12) echo "Bye!"; exit 0 ;;
+        3) show_status; read -p "Press Enter to continue...";;
+        4) view_log ;;
+        5) reset_settings; show_status; read -p "Press Enter to continue...";;
+        6) uninstall_all ;;
+        7) echo "Bye!"; exit 0 ;;
         *) echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
     esac
 done
