@@ -197,16 +197,37 @@ validate_ip_or_host() {
     [ $? -eq 0 ] && return 0 || { log_msg "ERROR" "Invalid IP address or hostname."; return 1; }
 }
 parse_duration() {
-    local input="$1" total=0 rest="$input" matched=0
+    local input="$1"
+    local total=0
+    local rest="$input"
+    local matched=0
     while [[ -n "$rest" ]]; do
-        if [[ $rest =~ ^([0-9]+)[hH](.*) ]]; then total=$((total + ${BASH_REMATCH[1]} * 3600)); rest="${BASH_REMATCH[2]}"; matched=1
-        elif [[ $rest =~ ^([0-9]+)[mM](.*) ]]; then total=$((total + ${BASH_REMATCH[1]} * 60)); rest="${BASH_REMATCH[2]}"; matched=1
-        elif [[ $rest =~ ^([0-9]+)[sS](.*) ]]; then total=$((total + ${BASH_REMATCH[1]})); rest="${BASH_REMATCH[2]}"; matched=1
-        elif [[ $rest =~ ^([0-9]+)(.*) ]]; then total=$((total + ${BASH_REMATCH[1]})); rest="${BASH_REMATCH[2]}"; matched=1
-        else break; fi
+        if [[ $rest =~ ^([0-9]+)[hH](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]} * 3600))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)[mM](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]} * 60))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)[sS](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)$ ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest=""
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)(.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        else
+            break
+        fi
         rest="${rest#"${rest%%[![:space:]]*}"}"
     done
-    [[ $matched -eq 1 ]] && echo $total || echo 0
+    [[ $matched -eq 1 && $total -gt 0 ]] && echo $total || echo 0
 }
 test_mtu() {
     local IFACE=$1 DST=$2 MTU
