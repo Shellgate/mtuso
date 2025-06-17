@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# MTUSO - Smart MTU/MSS Optimizer (Clean Minimal English Version)
+# MTUSO - Smart MTU/MSS Optimizer (Clean Minimal English Version, fixed systemd & duration bug)
 # Author: Shellgate | Last Update: 2025-06-17
 
 RED='\033[1;31m'
@@ -36,7 +36,6 @@ if [[ $EUID -ne 0 ]]; then
     fi
 fi
 
-# Helper functions
 prompt_yesno() {
     while true; do
         read -p "$1 (y/n): " yn
@@ -62,7 +61,6 @@ suggest_logrotate() {
     fi
 }
 
-# Log viewer
 view_log() {
     while true; do
         echo -e "\nLog viewing options:"
@@ -90,7 +88,6 @@ clear_log() {
     fi
 }
 
-# Service management
 setup_service() {
     local TMPFILE="/tmp/.mtuso.service.tmp"
     cat <<EOF > "$TMPFILE"
@@ -103,8 +100,6 @@ Type=simple
 ExecStart=$INSTALL_PATH --auto
 Restart=on-failure
 RestartSec=60
-StartLimitBurst=3
-StartLimitIntervalSec=600
 
 [Install]
 WantedBy=multi-user.target
@@ -133,7 +128,6 @@ disable_service() {
     sleep 1
 }
 
-# Status
 show_status() {
     if [ ! -f "$INSTALL_PATH" ]; then echo -e "Status: ${RED}NOT INSTALLED${NC}"; return; fi
     SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
@@ -154,7 +148,6 @@ show_status() {
     fi
 }
 
-# Network helpers
 get_all_interfaces() {
     ip -o link show | awk -F': ' '{print $2}' | grep -v lo
 }
@@ -502,7 +495,6 @@ enable_disable_service() {
     fi
 }
 
-# Main menu (7 key options)
 suggest_logrotate
 
 if [ "$1" = "--auto" ]; then run_optimization; exit 0; fi
