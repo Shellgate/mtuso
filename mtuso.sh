@@ -3,36 +3,34 @@
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
 CYAN='\033[1;36m'
-NC='\033[0m'
 GRAY='\033[1;30m'
+NC='\033[0m'
 
+SELF_URL="https://raw.githubusercontent.com/Shellgate/mtuso/main/mtuso.sh"
 INSTALL_PATH="/usr/local/bin/mtuso"
 SYSTEMD_SERVICE="/etc/systemd/system/mtuso.service"
 STATUS_FILE="/tmp/.smart_mtu_mss_status"
 CONFIG_FILE="/etc/mtuso.conf"
-ORIGINAL_MTU_FILE="/etc/mtuso_original.conf"
 
 install_deps() {
-    local pkgs=(iproute2 net-tools bc curl)
-    local to_install=()
-    for pkg in "${pkgs[@]}"; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || to_install+=("$pkg")
-    done
-    if (( ${#to_install[@]} )); then
-        if ping -c1 -W1 1.1.1.1 >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y "${to_install[@]}"
-        else
-            echo -e "${RED}No internet connection. Cannot install: ${to_install[*]}${NC}"
-            echo -e "${YELLOW}Please install the required packages manually!${NC}"
-            return 1
-        fi
-    fi
+    echo -e "${CYAN}Installing dependencies...${NC}"
+    sudo apt-get update -y
+    sudo apt-get install -y iproute2 net-tools bc curl
+    echo -e "${GREEN}Dependencies installed.${NC}"
 }
 
-install_service_always() {
-    sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
+self_install() {
+    echo -e "${CYAN}Installing MTUSO...${NC}"
+    sudo curl -fsSL "$SELF_URL" -o "$INSTALL_PATH"
+    sudo chmod +x "$INSTALL_PATH"
+    echo -e "${GREEN}MTUSO installed to $INSTALL_PATH${NC}"
+    sleep 1
+}
+
+setup_service() {
+    cat <<EOF | sudo tee "$SYSTEMD_SERVICE" >/dev/null
 [Unit]
 Description=MTU Smart Optimizer Service
 After=network-online.target
@@ -46,22 +44,48 @@ Restart=always
 WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
-    sudo systemctl enable mtuso
-    sudo systemctl stop mtuso 2>/dev/null || true
 }
 
-is_service_installed() {
-    [ -f "$SYSTEMD_SERVICE" ]
+enable_service() {
+    setup_service
+    sudo systemctl enable mtuso
+    sudo systemctl start mtuso
+    echo -e "${GREEN}Service enabled and started.${NC}"
+    sleep 1
+}
+
+disable_service() {
+    sudo systemctl stop mtuso || true
+    sudo systemctl disable mtuso || true
+    echo -e "${RED}Service stopped and disabled.${NC}"
+    sleep 1
+}
+
+uninstall_all() {
+    read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Uninstall cancelled.${NC}"; return; }
+    sudo systemctl stop mtuso || true
+    sudo systemctl disable mtuso || true
+    sudo rm -f "$SYSTEMD_SERVICE"
+    sudo rm -f "$INSTALL_PATH"
+    sudo rm -f "$CONFIG_FILE"
+    sudo systemctl daemon-reload
+    echo -e "${GREEN}MTUSO has been uninstalled.${NC}"
+    sleep 1
+    exit 0
+}
+
+get_main_interface() {
+    ip route | grep '^default' | awk '{print $5}' | head -n1
 }
 
 validate_ip_or_host() {
-    if [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        ping -c1 -W1 "$1" >/dev/null 2>&1
-        return $?
-    else
-        host "$1" >/dev/null 2>&1
-        return $?
+    local DST="$1"
+    if ! ping -c1 -W1 "$DST" >/dev/null 2>&1; then
+        echo -e "${RED}Invalid IP address or hostname. Please try again.${NC}"
+        return 1
     fi
+    return 0
 }
 
 parse_duration() {
@@ -70,39 +94,63 @@ parse_duration() {
     local rest="$input"
     local matched=0
     while [[ -n "$rest" ]]; do
-        if [[ $rest =~ ^([0-9]+)([hHmMsS])(.*) ]]; then
-            local num=${BASH_REMATCH[1]}
-            local unit=${BASH_REMATCH[2]}
-            rest=${BASH_REMATCH[3]}
-            case $unit in
-                [hH]) total=$((total + num * 3600)) ;;
-                [mM]) total=$((total + num * 60)) ;;
-                [sS]) total=$((total + num)) ;;
-            esac
+        if [[ $rest =~ ^([0-9]+)[hH](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]} * 3600))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)[mM](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]} * 60))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)[sS](.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest="${BASH_REMATCH[2]}"
+            matched=1
+        elif [[ $rest =~ ^([0-9]+)(.*) ]]; then
+            total=$((total + ${BASH_REMATCH[1]}))
+            rest="${BASH_REMATCH[2]}"
             matched=1
         else
-            echo "Invalid duration format: $input"
-            return 1
+            break
         fi
         rest="${rest#"${rest%%[![:space:]]*}"}"
     done
-    if [[ $matched -eq 1 ]]; then
-        echo $total
-        return 0
-    else
-        echo "No valid duration components found"
-        return 1
-    fi
+    [[ $matched -eq 1 ]] && echo $total || echo 0
 }
 
-get_main_interface() {
-    ip route | grep '^default' | awk '{print $5}' | head -n1
+test_mtu() {
+    local IFACE=$1
+    local DST=$2
+    local MIN_MTU=1300
+    local MAX_MTU=1500
+    local BEST_MTU=$MIN_MTU
+    local original_mtu
+
+    original_mtu=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
+    sudo ip link set dev "$IFACE" mtu $MAX_MTU
+
+    if ! ping -I "$IFACE" -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Warning: $IFACE cannot reach $DST. Skipping.${NC}"
+        sudo ip link set dev "$IFACE" mtu $original_mtu
+        return 1
+    fi
+
+    for ((MTU=$MAX_MTU; MTU>=$MIN_MTU; MTU-=10)); do
+        if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+            BEST_MTU=$MTU
+            break
+        fi
+    done
+    sudo ip link set dev "$IFACE" mtu $original_mtu
+    echo $BEST_MTU
+    return 0
 }
 
 test_jumbo_supported() {
     local IFACE=$1
     local ORIG_MTU
     ORIG_MTU=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
+    sudo ip link set dev "$IFACE" up
     if sudo ip link set dev "$IFACE" mtu 9000 2>/dev/null; then
         sudo ip link set dev "$IFACE" mtu "$ORIG_MTU"
         return 0
@@ -111,218 +159,9 @@ test_jumbo_supported() {
     fi
 }
 
-show_service_error() {
-    echo -e "${RED}Service failed to start or restart.${NC}"
-    systemctl status mtuso --no-pager -l | head -30
-    echo -e "${YELLOW}Recent logs:${NC}"
-    sudo journalctl -u mtuso -n 10 --no-pager
-    echo -e "${YELLOW}Summary: Missing/corrupted executable, wrong permissions, or invalid config are likely causes.${NC}"
-}
-
-initial_install() {
-    install_deps || return 1
-
-    if [ ! -f "$INSTALL_PATH" ]; then
-        sudo cp "$0" "$INSTALL_PATH"
-    fi
-    if ! head -1 "$INSTALL_PATH" | grep -qE '^#!.*/bash'; then
-        echo -e "${RED}Script missing or invalid shebang (#!/bin/bash)${NC}"
-        return 1
-    fi
-    if ! sudo chmod +x "$INSTALL_PATH"; then
-        echo -e "${RED}Failed to make $INSTALL_PATH executable!${NC}"
-        return 1
-    fi
-
-    install_service_always
-
-    local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
-    IFACE=$(get_main_interface)
-    if [ -z "$IFACE" ]; then
-        echo -e "${RED}No main network interface detected.${NC}"
-        return 1
-    fi
-    local ORIG_MTU
-    ORIG_MTU=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
-    echo "ORIGINAL_MTU=$ORIG_MTU" | sudo tee "$ORIGINAL_MTU_FILE" >/dev/null
-
-    while true; do
-        read -p "Enter destination IP or domain for MTU test: " DST
-        if [ -z "$DST" ]; then
-            echo -e "${RED}Destination cannot be empty!${NC}"
-            continue
-        fi
-        if validate_ip_or_host "$DST"; then
-            break
-        else
-            echo -e "${RED}Invalid IP address or hostname. Please try again.${NC}"
-        fi
-    done
-    while true; do
-        read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s): " INTERVAL_RAW
-        if ! INTERVAL=$(parse_duration "$INTERVAL_RAW"); then
-            echo -e "${RED}Parsing failed: $INTERVAL${NC}"
-            continue
-        fi
-        if [ "$INTERVAL" -ge 5 ]; then
-            break
-        else
-            echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
-        fi
-    done
-    if test_jumbo_supported "$IFACE"; then
-        while true; do
-            read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n): " JUMBO
-            if [[ "$JUMBO" =~ ^[yYnN]$ ]]; then break; fi
-        done
-        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
-            while true; do
-                read -p "Force Jumbo Frame even if ping test fails? (y/n): " FORCE_JUMBO
-                if [[ "$FORCE_JUMBO" =~ ^[yYnN]$ ]]; then break; fi
-            done
-        else
-            FORCE_JUMBO="n"
-        fi
-    else
-        JUMBO="n"
-        FORCE_JUMBO="n"
-    fi
-    if ! sudo tee "$CONFIG_FILE" >/dev/null <<EOF
-DST=$DST
-INTERVAL=$INTERVAL
-JUMBO=$JUMBO
-FORCE_JUMBO=$FORCE_JUMBO
-EOF
-    then
-        echo -e "${RED}Failed to write config file!${NC}"
-        return 1
-    fi
-
-    while true; do
-        read -p "Start the service now? (y/n): " ANS
-        if [[ "$ANS" =~ ^[yYnN]$ ]]; then break; fi
-    done
-    if [[ "$ANS" =~ ^[yY]$ ]]; then
-        sudo systemctl start mtuso
-        sleep 1
-        if ! systemctl is-active --quiet mtuso 2>/dev/null; then
-            show_service_error
-        fi
-    else
-        echo -e "${YELLOW}Service is not started. You can start it later from the menu.${NC}"
-    fi
-    sleep 1
-}
-
-edit_service() {
-    sudo systemctl stop mtuso 2>/dev/null || true
-    sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
-[Unit]
-Description=MTU Smart Optimizer Service
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=$INSTALL_PATH --auto
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    sudo systemctl daemon-reload
-}
-
-edit_config_service() {
-    if ! is_service_installed; then
-        echo -e "${RED}Service is not installed yet. Please run initial installation first.${NC}"
-        sleep 2
-        return 1
-    fi
-    local was_active=0
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        was_active=1
-        sudo systemctl stop mtuso
-    fi
-    local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE_JUMBO
-    IFACE=$(get_main_interface)
-    local prev_DST="" prev_INTERVAL="" prev_JUMBO="" prev_FORCE_JUMBO=""
-    if [ -f "$CONFIG_FILE" ]; then
-        . "$CONFIG_FILE"
-        prev_DST="$DST"
-        prev_INTERVAL="$INTERVAL"
-        prev_JUMBO="$JUMBO"
-        prev_FORCE_JUMBO="$FORCE_JUMBO"
-    fi
-    while true; do
-        read -p "Enter destination IP or domain for MTU test [${prev_DST}]: " DST_NEW
-        DST="${DST_NEW:-$prev_DST}"
-        if [ -z "$DST" ]; then
-            echo -e "${RED}Destination cannot be empty!${NC}"
-            continue
-        fi
-        if validate_ip_or_host "$DST"; then
-            break
-        else
-            echo -e "${RED}Invalid IP address or hostname. Please try again.${NC}"
-        fi
-    done
-    while true; do
-        read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s) [${prev_INTERVAL}]: " INTERVAL_RAW_NEW
-        INTERVAL_RAW="${INTERVAL_RAW_NEW:-$prev_INTERVAL}"
-        if ! INTERVAL=$(parse_duration "$INTERVAL_RAW"); then
-            echo -e "${RED}Parsing failed: $INTERVAL${NC}"
-            continue
-        fi
-        if [ "$INTERVAL" -ge 5 ]; then
-            break
-        else
-            echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
-        fi
-    done
-    if test_jumbo_supported "$IFACE"; then
-        while true; do
-            read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n) [${prev_JUMBO}]: " JUMBO_NEW
-            JUMBO="${JUMBO_NEW:-$prev_JUMBO}"
-            if [[ "$JUMBO" =~ ^[yYnN]$ ]]; then break; fi
-        done
-        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
-            while true; do
-                read -p "Force Jumbo Frame even if ping test fails? (y/n) [${prev_FORCE_JUMBO}]: " FORCE_JUMBO_NEW
-                FORCE_JUMBO="${FORCE_JUMBO_NEW:-$prev_FORCE_JUMBO}"
-                if [[ "$FORCE_JUMBO" =~ ^[yYnN]$ ]]; then break; fi
-            done
-        else
-            FORCE_JUMBO="n"
-        fi
-    else
-        JUMBO="n"
-        FORCE_JUMBO="n"
-    fi
-    if ! sudo tee "$CONFIG_FILE" >/dev/null <<EOF
-DST=$DST
-INTERVAL=$INTERVAL
-JUMBO=$JUMBO
-FORCE_JUMBO=$FORCE_JUMBO
-EOF
-    then
-        echo -e "${RED}Failed to write config file!${NC}"
-        return 1
-    fi
-    edit_service
-    while true; do
-        read -p "Start the service now? (y/n): " ANS
-        if [[ "$ANS" =~ ^[yYnN]$ ]]; then break; fi
-    done
-    if [[ "$ANS" =~ ^[yY]$ ]]; then
-        sudo systemctl start mtuso
-        sleep 1
-        if ! systemctl is-active --quiet mtuso 2>/dev/null; then
-            show_service_error
-        fi
-    else
-        echo -e "${YELLOW}Service is not started. You can start it later from the menu.${NC}"
-    fi
-    sleep 1
+calc_mss() {
+    local MTU=$1
+    echo $((MTU-40))
 }
 
 apply_settings() {
@@ -331,232 +170,258 @@ apply_settings() {
     local MSS=$3
     local ORIG_MTU
     ORIG_MTU=$(ip link show "$IFACE" | grep -o 'mtu [0-9]*' | awk '{print $2}')
-    sudo ip link set dev "$IFACE" up mtu "$MTU"
+    sudo ip link set dev $IFACE mtu $MTU
     if ! ping -I "$IFACE" -c 1 -W 1 8.8.8.8 >/dev/null 2>&1; then
-        sudo ip link set dev "$IFACE" mtu "$ORIG_MTU"
+        sudo ip link set dev $IFACE mtu $ORIG_MTU
+        echo -e "${RED}MTU change broke connectivity. Reverted to previous MTU ($ORIG_MTU).${NC}"
         return 1
     fi
-    sudo iptables -t mangle -F 2>/dev/null
-    sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS"
+    sudo iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS 2>/dev/null || \
+    sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS
     return 0
 }
 
 reset_settings() {
     local IFACE
     IFACE=$(get_main_interface)
-    if [ -f "$ORIGINAL_MTU_FILE" ]; then
-        . "$ORIGINAL_MTU_FILE"
-        [ -n "$IFACE" ] && sudo ip link set dev "$IFACE" mtu "$ORIGINAL_MTU"
-    else
-        [ -n "$IFACE" ] && sudo ip link set dev "$IFACE" mtu 1500
-    fi
-    sudo iptables -t mangle -F 2>/dev/null
+    [ -z "$IFACE" ] && return
+    sudo ip link set dev $IFACE mtu 1500
+    sudo iptables -t mangle -F
     sudo rm -f "$CONFIG_FILE"
+    echo -e "${GREEN}All settings reset to default.${NC}"
     sleep 1
+}
+
+get_service_status() {
+    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
+    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
+    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+        echo -e "${GREEN}ON${NC}"
+    else
+        echo -e "${RED}OFF${NC}"
+    fi
+}
+
+get_optimization_status() {
+    if [ -f "$STATUS_FILE" ]; then
+        STATUS=$(cat "$STATUS_FILE")
+        case $STATUS in
+            enabled) echo -e "${GREEN}Running${NC}" ;;
+            paused) echo -e "${YELLOW}Paused${NC}" ;;
+            disabled) echo -e "${RED}Disabled${NC}" ;;
+            *) echo -e "${GRAY}Unknown${NC}" ;;
+        esac
+    else
+        echo -e "${RED}Inactive${NC}"
+    fi
 }
 
 show_status() {
-    systemctl status mtuso --no-pager -l | head -30
-    sudo journalctl -u mtuso -n 10 --no-pager
-}
-
-show_live_log() {
-    sudo journalctl -u mtuso -f
-}
-
-toggle_service() {
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        sudo systemctl stop mtuso
-    else
-        sudo systemctl start mtuso
-    fi
-    sleep 1
-}
-
-toggle_autostart() {
-    if systemctl is-enabled --quiet mtuso 2>/dev/null; then
-        sudo systemctl disable mtuso
-    else
-        sudo systemctl enable mtuso
-    fi
-    sleep 1
-}
-
-restart_service() {
     if [ ! -f "$INSTALL_PATH" ]; then
-        return 1
+        echo -e "Status: ${RED}NOT INSTALLED${NC}"
+        return
     fi
-    sudo chmod +x "$INSTALL_PATH"
-    sudo systemctl daemon-reload
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        sudo systemctl restart mtuso
+    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
+    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
+    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+        echo -e "Status: ${GREEN}ENABLED${NC}"
+    elif [ "$SYS_STATUS" = "enabled" ]; then
+        echo -e "Status: ${YELLOW}INSTALLED, but NOT RUNNING${NC}"
     else
-        sudo systemctl start mtuso
+        echo -e "Status: ${YELLOW}INSTALLED, but DISABLED${NC}"
     fi
-    sleep 1
 }
 
-uninstall_service() {
-    sudo systemctl stop mtuso 2>/dev/null || true
-    sudo systemctl disable mtuso 2>/dev/null || true
-    sudo rm -f "$SYSTEMD_SERVICE"
-    sudo systemctl daemon-reload
-}
-
-uninstall_all() {
-    read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || return
+configure_settings() {
+    local IFACE DST INTERVAL_RAW INTERVAL JUMBO
     IFACE=$(get_main_interface)
-    [ -n "$IFACE" ] && sudo ip link set dev "$IFACE" mtu 1500
-    sudo iptables -t mangle -F 2>/dev/null
-    uninstall_service
-    sudo rm -f "$INSTALL_PATH"
-    sudo rm -f "$CONFIG_FILE"
-    sudo rm -f "$STATUS_FILE"
-    sudo rm -f "$ORIGINAL_MTU_FILE"
-    sleep 1
-    exit 0
-}
-
-delete_settings() {
-    read -p "Are you sure you want to reset all network optimization settings? (y/n): " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || return
-    reset_settings
-    rm -f "$STATUS_FILE"
-    sleep 1
-}
-
-find_best_mtu() {
-    local IFACE=$1
-    local DST=$2
-    local best_mtu=1300
-    local best_score=100000
-    local step=5
-    local PING_CMD="ping"
-    if [[ "$DST" =~ : ]]; then
-        PING_CMD="ping6"
+    if [ -z "$IFACE" ]; then
+        echo -e "${RED}No main network interface detected.${NC}"
+        return
     fi
-    for ((mtu=1500; mtu>=1300; mtu-=step)); do
-        local ok=1
-        local delays=()
-        if [[ "$PING_CMD" == "ping6" ]]; then
-            if ! ping6 -c1 -W1 "$DST" >/dev/null 2>&1; then
-                echo 1500
-                return
-            fi
-        else
-            if ! ping -c1 -W1 "$DST" >/dev/null 2>&1; then
-                echo 1500
-                return
-            fi
-        fi
-        for i in {1..3}; do
-            OUT=$($PING_CMD -I "$IFACE" -c 1 -W 1 "$DST" ${PING_CMD:+-s} $((mtu-28)) 2>/dev/null)
-            if [[ $? -ne 0 ]]; then ok=0; break; fi
-            DELAY=$(echo "$OUT" | grep 'time=' | sed -n 's/.*time=\([0-9.]*\).*/\1/p')
-            delays+=("$DELAY")
-        done
-        if [[ $ok -eq 1 ]]; then
-            AVG=$(echo "${delays[@]}" | tr ' ' '\n' | awk '{s+=$1}END{print (NR>0)?s/NR:0}')
-            MAX=$(echo "${delays[@]}" | tr ' ' '\n' | sort -n | tail -1)
-            MIN=$(echo "${delays[@]}" | tr ' ' '\n' | sort -n | head -1)
-            JITTER=$(echo "$MAX - $MIN" | bc)
-            SCORE=$(echo "$AVG + 2*$JITTER" | bc)
-            if (( $(echo "$SCORE < $best_score" | bc -l) )); then
-                best_score=$SCORE
-                best_mtu=$mtu
-            fi
+    echo -e "${CYAN}Detected main interface: $IFACE${NC}"
+
+    while true; do
+        read -p "Enter destination IP or domain for MTU test (e.g. 8.8.8.8): " DST
+        if validate_ip_or_host "$DST"; then
+            break
         fi
     done
-    echo $best_mtu
+
+    while true; do
+        read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s): " INTERVAL_RAW
+        INTERVAL=$(parse_duration "$INTERVAL_RAW")
+        [ "$INTERVAL" -ge 5 ] && break
+        echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
+    done
+
+    if test_jumbo_supported "$IFACE"; then
+        read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n): " JUMBO
+    else
+        echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
+        JUMBO="n"
+    fi
+
+    sudo tee "$CONFIG_FILE" >/dev/null <<EOF
+DST=$DST
+INTERVAL=$INTERVAL
+JUMBO=$JUMBO
+EOF
+    echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
 }
 
 run_optimization() {
     if [ ! -f "$CONFIG_FILE" ]; then
-        initial_install
+        echo -e "${YELLOW}No configuration found. Please complete configuration first.${NC}"
+        configure_settings
         [ ! -f "$CONFIG_FILE" ] && return
     fi
+
     . "$CONFIG_FILE"
     local IFACE
     IFACE=$(get_main_interface)
-    echo "enabled" > "$STATUS_FILE"
-    while [ "$(cat "$STATUS_FILE" 2>/dev/null)" == "enabled" ]; do
-        if [[ "$JUMBO" =~ ^[yY]$ ]]; then
-            sudo ip link set dev "$IFACE" mtu 9000
-            local jumbo_ok=1
-            for i in {1..3}; do
-                ping -I "$IFACE" -M do -s 8972 -c 1 -W 1 "$DST" >/dev/null 2>&1 || { jumbo_ok=0; break; }
-            done
-            if [[ $jumbo_ok -eq 1 || "$FORCE_JUMBO" =~ ^[yY]$ ]]; then
+    echo "enabled" > $STATUS_FILE
+
+    while [ "$(cat $STATUS_FILE 2>/dev/null)" == "enabled" ]; do
+        if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
+            if test_jumbo_supported "$IFACE"; then
                 MTU=9000
-                MSS=8960
-                apply_settings "$IFACE" "$MTU" "$MSS"
-                for ((i=0; i<$INTERVAL; i++)); do
-                    [ "$(cat "$STATUS_FILE" 2>/dev/null)" != "enabled" ] && break
-                    sleep 1
-                done
-                continue
+                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                    MSS=$(calc_mss $MTU)
+                    echo -e "${CYAN}Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+                    apply_settings $IFACE $MTU $MSS
+                else
+                    echo -e "${RED}Jumbo Frame not working to $DST. Skipping.${NC}"
+                fi
             else
-                sudo ip link set dev "$IFACE" mtu 1500
+                echo -e "${RED}Jumbo Frame not supported by $IFACE, skipping.${NC}"
+            fi
+        else
+            MTU=$(test_mtu $IFACE $DST)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}Could not detect a safe MTU. Skipping...${NC}"
+            else
+                echo -e "${CYAN}Optimal MTU detected: $MTU${NC}"
+                MSS=$(calc_mss $MTU)
+                echo -e "${CYAN}Applying MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+                apply_settings $IFACE $MTU $MSS
             fi
         fi
-        MTU=$(find_best_mtu "$IFACE" "$DST")
-        MSS=$((MTU-40))
-        apply_settings "$IFACE" "$MTU" "$MSS"
         for ((i=0; i<$INTERVAL; i++)); do
-            [ "$(cat "$STATUS_FILE" 2>/dev/null)" != "enabled" ] && break
+            [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
             sleep 1
         done
+        [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
     done
+}
+
+enable_disable_service() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${YELLOW}You must configure optimization first.${NC}"
+        configure_settings
+        [ ! -f "$CONFIG_FILE" ] && return
+    fi
+    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
+    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
+    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+        disable_service
+    else
+        enable_service
+    fi
+}
+
+delete_settings() {
+    read -p "Are you sure you want to reset all network optimization settings? (y/n): " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Reset cancelled.${NC}"; return; }
+    reset_settings
+    rm -f $STATUS_FILE
+    echo -e "${RED}All optimizer settings and status removed.${NC}"
+    sleep 1
 }
 
 if [ "$1" = "--auto" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
+        echo "No config file found at $CONFIG_FILE, waiting for configuration..."
         while [ ! -f "$CONFIG_FILE" ]; do sleep 10; done
     fi
-    run_optimization
+    while true; do
+        . "$CONFIG_FILE"
+        IFACE=$(get_main_interface)
+        echo "enabled" > $STATUS_FILE
+
+        if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
+            if test_jumbo_supported "$IFACE"; then
+                MTU=9000
+                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                    MSS=$(calc_mss $MTU)
+                    apply_settings $IFACE $MTU $MSS
+                fi
+            fi
+        else
+            MTU=$(test_mtu $IFACE $DST)
+            if [ $? -eq 0 ]; then
+                MSS=$(calc_mss $MTU)
+                apply_settings $IFACE $MTU $MSS
+            fi
+        fi
+        for ((i=0; i<$INTERVAL; i++)); do
+            [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
+            sleep 1
+        done
+        [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
+    done
     exit 0
 fi
 
 while true; do
     clear
-    echo -e "${CYAN}========= MTUSO - Smart MTU/MSS Optimizer =========${NC}"
-    echo "1) Initial Install (Setup Service & Config)"
-    if is_service_installed; then
-        echo "2) Edit Config & Service"
-    else
-        echo -e "2) ${GRAY}Edit Config & Service (Disabled until install)${NC}"
+    echo -e "${CYAN}"
+    echo "╔════════════════════════════════════════════════╗"
+    echo "║      MTUSO - Smart MTU/MSS Optimizer          ║"
+    echo "╚════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    if [ ! -f "$INSTALL_PATH" ]; then
+        echo "  1) Install MTUSO"
+        echo "  2) Exit"
+        show_status
+        read -p "Choose an option [1-2]: " CHOICE
+        case $CHOICE in
+            1)
+                install_deps
+                self_install
+                sleep 1
+                ;;
+            2)
+                echo "Bye!"; exit 0 ;;
+            *)
+                echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
+        esac
+        continue
     fi
-    echo -n "3) Service status: "
-    if systemctl is-active --quiet mtuso 2>/dev/null; then
-        echo "ON"
+
+    echo -n "  1) Configure & Start Optimization [status: "
+    get_optimization_status
+    echo -n "  2) "
+    SYS_STATUS=$(systemctl is-enabled mtuso 2>/dev/null || echo "disabled")
+    RUN_STATUS=$(systemctl is-active mtuso 2>/dev/null || echo "inactive")
+    if [ "$SYS_STATUS" = "enabled" ] && [ "$RUN_STATUS" = "active" ]; then
+        echo -n "Disable Service "
     else
-        echo "OFF"
+        echo -n "Enable Service  "
     fi
-    echo -n "4) Service autostart: "
-    if systemctl is-enabled --quiet mtuso 2>/dev/null; then
-        echo "ON"
-    else
-        echo "OFF"
-    fi
-    echo "5) Restart Service"
-    echo "6) Status"
-    echo "7) Live Log"
-    echo "8) Reset All Settings"
-    echo "9) Uninstall"
-    echo "10) Exit"
-    read -p "Choose an option [1-10]: " CHOICE
+    echo -n "[status: "
+    get_service_status
+    echo "  3) Reset All Settings"
+    echo "  4) Uninstall MTUSO"
+    echo "  5) Exit"
+    show_status
+    read -p "Choose an option [1-5]: " CHOICE
     case $CHOICE in
-        1) initial_install ;;
-        2) is_service_installed && edit_config_service || { echo "Please run install first!"; sleep 1; } ;;
-        3) toggle_service ;;
-        4) toggle_autostart ;;
-        5) restart_service ;;
-        6) show_status; read -p "Press enter to continue..." ;;
-        7) show_live_log ;;
-        8) delete_settings ;;
-        9) uninstall_all ;;
-        10) exit 0 ;;
-        *) sleep 1 ;;
+        1) configure_settings ;;
+        2) enable_disable_service ;;
+        3) delete_settings ;;
+        4) uninstall_all ;;
+        5) echo "Bye!"; exit 0 ;;
+        *) echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
     esac
 done
