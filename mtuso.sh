@@ -36,29 +36,61 @@ install_deps() {
     fi
 }
 
-# ==== Systemd Service Setup ====
-setup_service() {
-    echo -e "${CYAN}Configuring systemd service...${NC}"
-    sudo systemctl stop mtuso 2>/dev/null || true
-    sudo systemctl disable mtuso 2>/dev/null || true
-    sudo rm -f "$SYSTEMD_SERVICE" || true
-    sudo systemctl daemon-reload
-
-    sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
+# ==== Systemd Service Installation ====
+install_service() {
+    if [ ! -f "$SYSTEMD_SERVICE" ]; then
+        echo -e "${CYAN}Installing systemd service...${NC}"
+        sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
 [Unit]
 Description=MTU Smart Optimizer Service
 After=network-online.target
+
 [Service]
 Type=simple
 ExecStart=$INSTALL_PATH --auto
 Restart=always
+
 [Install]
 WantedBy=multi-user.target
 EOF
+        sudo systemctl daemon-reload
+        sudo systemctl enable mtuso
+        echo -e "${GREEN}Service file created and enabled.${NC}"
+    else
+        echo -e "${YELLOW}Service already installed.${NC}"
+    fi
+}
 
+# ==== Systemd Service Update ====
+edit_service() {
+    echo -e "${CYAN}Updating systemd service config...${NC}"
+    sudo systemctl stop mtuso 2>/dev/null || true
+    sudo tee "$SYSTEMD_SERVICE" >/dev/null <<EOF
+[Unit]
+Description=MTU Smart Optimizer Service
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_PATH --auto
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
     sudo systemctl daemon-reload
-    sudo systemctl enable mtuso
-    echo -e "${GREEN}Service file created and enabled in systemd.${NC}"
+    sudo systemctl start mtuso
+    echo -e "${GREEN}Service updated and restarted.${NC}"
+}
+
+# ==== Systemd Service Removal ====
+uninstall_service() {
+    echo -e "${RED}Removing systemd service...${NC}"
+    sudo systemctl stop mtuso 2>/dev/null || true
+    sudo systemctl disable mtuso 2>/dev/null || true
+    sudo rm -f "$SYSTEMD_SERVICE"
+    sudo systemctl daemon-reload
+    echo -e "${GREEN}Service removed.${NC}"
 }
 
 # ==== Network Interface Detection ====
@@ -99,7 +131,6 @@ parse_duration() {
             echo "Invalid duration format: $input"
             return 1
         fi
-        # Skip spaces
         rest="${rest#"${rest%%[![:space:]]*}"}"
     done
 
@@ -251,9 +282,7 @@ EOF
         return 1
     fi
 
-    setup_service
-    sudo systemctl daemon-reload
-    sudo systemctl restart mtuso
+    edit_service
 
     sleep 1
 
@@ -282,10 +311,7 @@ apply_settings() {
         return 1
     fi
 
-    # Clear existing rules
     sudo iptables -t mangle -F 2>/dev/null
-
-    # Add new rule
     sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS"
     return 0
 }
@@ -376,15 +402,12 @@ uninstall_all() {
     [ -n "$IFACE" ] && sudo ip link set dev "$IFACE" mtu 1500
     sudo iptables -t mangle -F 2>/dev/null
 
-    sudo systemctl stop mtuso || true
-    sudo systemctl disable mtuso || true
-    sudo rm -f "$SYSTEMD_SERVICE"
+    uninstall_service
     sudo rm -f "$INSTALL_PATH"
     sudo rm -f "$CONFIG_FILE"
     sudo rm -f "$STATUS_FILE"
     sudo rm -f "$ORIGINAL_MTU_FILE"
 
-    sudo systemctl daemon-reload
     echo -e "${GREEN}MTUSO has been uninstalled and network settings restored to default.${NC}"
     sleep 1
     exit 0
