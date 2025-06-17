@@ -285,7 +285,6 @@ edit_config_service() {
         sleep 2
         return 1
     fi
-    # اگر سرویس فعال است، متوقف کن
     local was_active=0
     if systemctl is-active --quiet mtuso 2>/dev/null; then
         was_active=1
@@ -306,7 +305,6 @@ edit_config_service() {
         prev_FORCE_JUMBO="$FORCE_JUMBO"
     fi
 
-    # Destination validation loop
     while true; do
         read -p "Enter destination IP or domain for MTU test [${prev_DST}]: " DST_NEW
         DST="${DST_NEW:-$prev_DST}"
@@ -321,7 +319,6 @@ edit_config_service() {
         fi
     done
 
-    # Interval validation loop
     while true; do
         read -p "Enter optimization interval (e.g. 60, 5m, 2h, 1h5m10s) [${prev_INTERVAL}]: " INTERVAL_RAW_NEW
         INTERVAL_RAW="${INTERVAL_RAW_NEW:-$prev_INTERVAL}"
@@ -336,7 +333,6 @@ edit_config_service() {
         fi
     done
 
-    # Jumbo Frame configuration
     if test_jumbo_supported "$IFACE"; then
         while true; do
             read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n) [${prev_JUMBO}]: " JUMBO_NEW
@@ -359,7 +355,6 @@ edit_config_service() {
         FORCE_JUMBO="n"
     fi
 
-    # Save configuration
     if ! sudo tee "$CONFIG_FILE" >/dev/null <<EOF
 DST=$DST
 INTERVAL=$INTERVAL
@@ -374,7 +369,6 @@ EOF
 
     edit_service
 
-    # سوال برای روشن کردن سرویس بعد از ویرایش
     while true; do
         read -p "Start the service now? (y/n): " ANS
         if [[ "$ANS" =~ ^[yYnN]$ ]]; then break; fi
@@ -393,7 +387,6 @@ EOF
     sleep 1
 }
 
-# ==== Network Settings Application ====
 apply_settings() {
     local IFACE=$1
     local MTU=$2
