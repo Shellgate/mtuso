@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# MTUSO - Smart MTU/MSS Optimizer
+
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -13,6 +15,7 @@ INSTALL_PATH="/usr/local/bin/mtuso"
 SYSTEMD_SERVICE="/etc/systemd/system/mtuso.service"
 STATUS_FILE="/tmp/.smart_mtu_mss_status"
 CONFIG_FILE="/etc/mtuso.conf"
+LOG_FILE="/var/log/mtuso.log"
 
 install_deps() {
     echo -e "${CYAN}Installing dependencies...${NC}"
@@ -62,15 +65,17 @@ disable_service() {
 }
 
 uninstall_all() {
-    read -p "Are you sure you want to uninstall MTUSO and remove all settings? (y/n): " CONFIRM
+    read -p "Are you sure you want to uninstall MTUSO and remove all settings and logs? (y/n): " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}Uninstall cancelled.${NC}"; return; }
     sudo systemctl stop mtuso || true
     sudo systemctl disable mtuso || true
     sudo rm -f "$SYSTEMD_SERVICE"
     sudo rm -f "$INSTALL_PATH"
     sudo rm -f "$CONFIG_FILE"
+    sudo rm -f "$STATUS_FILE"
+    sudo rm -f "$LOG_FILE"
     sudo systemctl daemon-reload
-    echo -e "${GREEN}MTUSO has been uninstalled.${NC}"
+    echo -e "${GREEN}MTUSO has been uninstalled and all related files removed.${NC}"
     sleep 1
     exit 0
 }
@@ -188,6 +193,7 @@ reset_settings() {
     sudo ip link set dev $IFACE mtu 1500
     sudo iptables -t mangle -F
     sudo rm -f "$CONFIG_FILE"
+    sudo rm -f "$LOG_FILE"
     echo -e "${GREEN}All settings reset to default.${NC}"
     sleep 1
 }
@@ -233,7 +239,7 @@ show_status() {
 }
 
 configure_settings() {
-    local IFACE DST INTERVAL_RAW INTERVAL JUMBO
+    local IFACE DST INTERVAL_RAW INTERVAL JUMBO FORCE
     IFACE=$(get_main_interface)
     if [ -z "$IFACE" ]; then
         echo -e "${RED}No main network interface detected.${NC}"
@@ -255,19 +261,34 @@ configure_settings() {
         echo -e "${RED}Please enter a valid duration (>=5 seconds)!${NC}"
     done
 
-    if test_jumbo_supported "$IFACE"; then
-        read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n): " JUMBO
-    else
-        echo -e "${YELLOW}Jumbo Frame (MTU 9000) is NOT supported on $IFACE.${NC}"
-        JUMBO="n"
+    read -p "Enable Jumbo Frame (MTU 9000) for $IFACE? (y/n): " JUMBO
+    FORCE="n"
+    if [[ "$JUMBO" =~ ^[Yy]$ ]]; then
+        read -p "Force Jumbo Frame even if not supported or ping fails? (y/n): " FORCE
     fi
 
     sudo tee "$CONFIG_FILE" >/dev/null <<EOF
 DST=$DST
 INTERVAL=$INTERVAL
 JUMBO=$JUMBO
+FORCE=$FORCE
 EOF
     echo -e "${GREEN}Configuration saved to $CONFIG_FILE${NC}"
+}
+
+goto_normal_mtu() {
+    local IFACE DST MTU MSS
+    IFACE="$1"
+    DST="$2"
+    MTU=$(test_mtu $IFACE $DST)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Could not detect a safe MTU. Skipping...${NC}"
+    else
+        echo -e "${CYAN}Optimal MTU detected: $MTU${NC}"
+        MSS=$(calc_mss $MTU)
+        echo -e "${CYAN}Applying MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+        apply_settings $IFACE $MTU $MSS
+    fi
 }
 
 run_optimization() {
@@ -278,34 +299,45 @@ run_optimization() {
     fi
 
     . "$CONFIG_FILE"
-    local IFACE
+    local IFACE DST INTERVAL JUMBO FORCE MTU MSS
     IFACE=$(get_main_interface)
+    DST="$DST"
+    INTERVAL="$INTERVAL"
+    JUMBO="$JUMBO"
+    FORCE="$FORCE"
     echo "enabled" > $STATUS_FILE
+
+    # لاگ‌گیری زنده
+    exec > >(tee -a "$LOG_FILE") 2>&1
 
     while [ "$(cat $STATUS_FILE 2>/dev/null)" == "enabled" ]; do
         if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-            if test_jumbo_supported "$IFACE"; then
+            if [ "$FORCE" = "y" ] || [ "$FORCE" = "Y" ]; then
                 MTU=9000
-                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                    MSS=$(calc_mss $MTU)
-                    echo -e "${CYAN}Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
-                    apply_settings $IFACE $MTU $MSS
-                else
-                    echo -e "${RED}Jumbo Frame not working to $DST. Skipping.${NC}"
+                MSS=$(calc_mss $MTU)
+                echo -e "${CYAN}Force applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+                apply_settings $IFACE $MTU $MSS
+                if ! ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                    echo -e "${RED}Warning: Forced Jumbo Frame may not work to $DST.${NC}"
                 fi
             else
-                echo -e "${RED}Jumbo Frame not supported by $IFACE, skipping.${NC}"
+                if test_jumbo_supported "$IFACE"; then
+                    MTU=9000
+                    if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                        MSS=$(calc_mss $MTU)
+                        echo -e "${CYAN}Applying Jumbo Frame MTU=$MTU and MSS=$MSS on $IFACE${NC}"
+                        apply_settings $IFACE $MTU $MSS
+                    else
+                        echo -e "${RED}Jumbo Frame not working to $DST. Falling back to normal MTU.${NC}"
+                        goto_normal_mtu "$IFACE" "$DST"
+                    fi
+                else
+                    echo -e "${RED}Jumbo Frame not supported by $IFACE, falling back to normal MTU.${NC}"
+                    goto_normal_mtu "$IFACE" "$DST"
+                fi
             fi
         else
-            MTU=$(test_mtu $IFACE $DST)
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}Could not detect a safe MTU. Skipping...${NC}"
-            else
-                echo -e "${CYAN}Optimal MTU detected: $MTU${NC}"
-                MSS=$(calc_mss $MTU)
-                echo -e "${CYAN}Applying MTU=$MTU and MSS=$MSS on $IFACE${NC}"
-                apply_settings $IFACE $MTU $MSS
-            fi
+            goto_normal_mtu "$IFACE" "$DST"
         fi
         for ((i=0; i<$INTERVAL; i++)); do
             [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
@@ -339,30 +371,49 @@ delete_settings() {
     sleep 1
 }
 
+show_live_log() {
+    echo -e "${CYAN}Showing live log. Press Ctrl+C to exit.${NC}"
+    sudo touch "$LOG_FILE"
+    sudo tail -f "$LOG_FILE"
+}
+
 if [ "$1" = "--auto" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found at $CONFIG_FILE, waiting for configuration..."
         while [ ! -f "$CONFIG_FILE" ]; do sleep 10; done
     fi
-    while true; do
-        . "$CONFIG_FILE"
-        IFACE=$(get_main_interface)
-        echo "enabled" > $STATUS_FILE
+    . "$CONFIG_FILE"
+    IFACE=$(get_main_interface)
+    DST="$DST"
+    INTERVAL="$INTERVAL"
+    JUMBO="$JUMBO"
+    FORCE="$FORCE"
+    echo "enabled" > $STATUS_FILE
 
+    # لاگ‌گیری زنده
+    exec > >(tee -a "$LOG_FILE") 2>&1
+
+    while true; do
         if [ "$JUMBO" = "y" ] || [ "$JUMBO" = "Y" ]; then
-            if test_jumbo_supported "$IFACE"; then
+            if [ "$FORCE" = "y" ] || [ "$FORCE" = "Y" ]; then
                 MTU=9000
-                if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
-                    MSS=$(calc_mss $MTU)
-                    apply_settings $IFACE $MTU $MSS
+                MSS=$(calc_mss $MTU)
+                apply_settings $IFACE $MTU $MSS
+            else
+                if test_jumbo_supported "$IFACE"; then
+                    MTU=9000
+                    if ping -I "$IFACE" -M do -s $((MTU-28)) -c 1 -W 1 "$DST" >/dev/null 2>&1; then
+                        MSS=$(calc_mss $MTU)
+                        apply_settings $IFACE $MTU $MSS
+                    else
+                        goto_normal_mtu "$IFACE" "$DST"
+                    fi
+                else
+                    goto_normal_mtu "$IFACE" "$DST"
                 fi
             fi
         else
-            MTU=$(test_mtu $IFACE $DST)
-            if [ $? -eq 0 ]; then
-                MSS=$(calc_mss $MTU)
-                apply_settings $IFACE $MTU $MSS
-            fi
+            goto_normal_mtu "$IFACE" "$DST"
         fi
         for ((i=0; i<$INTERVAL; i++)); do
             [ "$(cat $STATUS_FILE 2>/dev/null)" != "enabled" ] && break
@@ -412,16 +463,18 @@ while true; do
     echo -n "[status: "
     get_service_status
     echo "  3) Reset All Settings"
-    echo "  4) Uninstall MTUSO"
-    echo "  5) Exit"
+    echo "  4) Show Live Log"
+    echo "  5) Uninstall MTUSO Completely"
+    echo "  6) Exit"
     show_status
-    read -p "Choose an option [1-5]: " CHOICE
+    read -p "Choose an option [1-6]: " CHOICE
     case $CHOICE in
         1) configure_settings ;;
         2) enable_disable_service ;;
         3) delete_settings ;;
-        4) uninstall_all ;;
-        5) echo "Bye!"; exit 0 ;;
+        4) show_live_log ;;
+        5) uninstall_all ;;
+        6) echo "Bye!"; exit 0 ;;
         *) echo -e "${RED}Invalid option!${NC}"; sleep 1 ;;
     esac
 done
